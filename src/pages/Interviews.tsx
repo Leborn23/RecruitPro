@@ -411,7 +411,9 @@ export default function Interviews() {
     const interviewIds = rows.map((row) => row.id);
     const { data, error } = await supabase
       .from('interview_reports')
-      .select('interview_id,overall_score,recommendation,risk_score,summary,dimension_scores,strengths,risks,evidence,created_at,updated_at')
+      .select(
+        'id,session_id,interview_id,candidate_id,overall_score,dimension_scores,strengths,risks,recommendation,evidence,summary,risk_score,human_confirmed,human_confirmed_by,human_confirmed_at,generated_by,created_at,updated_at'
+      )
       .in('interview_id', interviewIds)
       .order('updated_at', { ascending: false });
 
@@ -500,7 +502,25 @@ export default function Interviews() {
   };
 
   const handleHumanConfirmReport = async (confirmed: boolean) => {
-    if (!reportData?.id || !reportInterviewId) {
+    let currentReportId = reportData?.id ?? '';
+    if (!currentReportId && reportInterviewId) {
+      try {
+        const freshReport = await fetchInterviewReportByInterview(reportInterviewId);
+        if (freshReport) {
+          const mapped = mapReportRowToView(freshReport);
+          setReportData(mapped);
+          setReportByInterviewId((prev) => ({
+            ...prev,
+            [reportInterviewId]: mapped
+          }));
+          currentReportId = mapped.id ?? '';
+        }
+      } catch {
+        // Keep the original guard below to show a stable message.
+      }
+    }
+
+    if (!currentReportId || !reportInterviewId) {
       alert('缺少报告上下文，无法提交人工确认');
       return;
     }
@@ -509,7 +529,7 @@ export default function Interviews() {
     try {
       const result = await interviewRuntimeEdge.humanConfirm<{ report?: InterviewReportRow }>({
         interviewId: reportInterviewId,
-        reportId: reportData.id,
+        reportId: currentReportId,
         confirmed,
         finalRecommendation: reportReviewDecision ?? null,
         note: reportReviewNote.trim() || null

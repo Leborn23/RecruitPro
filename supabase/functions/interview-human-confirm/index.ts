@@ -1,6 +1,5 @@
-import { createAdminClient, requireAuth } from '../_shared/auth.ts';
+import { requireAuth } from '../_shared/auth.ts';
 import { HttpError, errorResponse, handleCors, jsonResponse, nowIso, readJsonBody } from '../_shared/http.ts';
-import { invokeAgentReview, loadAgentLlmConfig, mapAgentReportToInterviewReport } from '../_shared/agentGateway.ts';
 
 interface HumanConfirmPayload {
   interviewId?: string;
@@ -20,7 +19,6 @@ Deno.serve(async (req) => {
 
   try {
     const { client, user } = await requireAuth(req);
-    const adminClient = createAdminClient();
     const body = await readJsonBody<HumanConfirmPayload>(req);
 
     const interviewId = String(body.interviewId ?? '').trim();
@@ -35,7 +33,9 @@ Deno.serve(async (req) => {
 
     const { data: reportRow, error: reportError } = await client
       .from('interview_reports')
-      .select('id,session_id,interview_id,candidate_id')
+      .select(
+        'id,session_id,interview_id,candidate_id,overall_score,dimension_scores,strengths,risks,recommendation,evidence,summary,risk_score'
+      )
       .eq('id', reportId)
       .single();
 
@@ -52,38 +52,23 @@ Deno.serve(async (req) => {
       throw new HttpError(400, 'Report missing session_id');
     }
 
-    const reviewComments = [note, finalRecommendation ? `finalRecommendation=${finalRecommendation}` : '']
-      .filter(Boolean)
-      .join('\n');
-    const llmConfig = await loadAgentLlmConfig(adminClient);
-
-    const agentResponse = await invokeAgentReview({
-      session_id: sessionId,
-      approved: confirmed,
-      comments: reviewComments,
-      llm_config: llmConfig
-    });
-
-    const finalReport = agentResponse.final_report;
-    if (!finalReport) {
-      throw new HttpError(502, 'Agent did not return final report after human confirmation');
-    }
-
-    const mapped = mapAgentReportToInterviewReport(finalReport);
-    const recommendation = finalRecommendation ?? mapped.recommendation;
+    const recommendation = finalRecommendation ?? reportRow.recommendation ?? (confirmed ? 'hire' : 'reject');
     const now = nowIso();
+    const mergedSummary = note
+      ? `${String(reportRow.summary ?? '').trim()}\n\nHuman review note: ${note}`.trim()
+      : reportRow.summary;
 
     const { data: updatedReport, error: updateReportError } = await client
       .from('interview_reports')
       .update({
-        overall_score: mapped.overall_score,
-        dimension_scores: mapped.dimension_scores,
-        strengths: mapped.strengths,
-        risks: mapped.risks,
+        overall_score: reportRow.overall_score,
+        dimension_scores: reportRow.dimension_scores,
+        strengths: reportRow.strengths,
+        risks: reportRow.risks,
         recommendation,
-        evidence: mapped.evidence,
-        summary: mapped.summary,
-        risk_score: mapped.risk_score,
+        evidence: reportRow.evidence,
+        summary: mergedSummary,
+        risk_score: reportRow.risk_score,
         human_confirmed: confirmed,
         human_confirmed_by: user.id,
         human_confirmed_at: now,
