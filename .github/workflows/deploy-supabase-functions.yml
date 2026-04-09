@@ -1,0 +1,50 @@
+name: Deploy Supabase Interview Functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/functions/**"
+      - "supabase/config.toml"
+      - "supabase/migrations/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Sync agent secrets
+        run: |
+          supabase secrets set \
+            AGENT_BASE_URL=${{ secrets.AGENT_BASE_URL }} \
+            AGENT_SHARED_SECRET=${{ secrets.AGENT_SHARED_SECRET }} \
+            AGENT_TIMEOUT_MS=${{ secrets.AGENT_TIMEOUT_MS }}
+
+      - name: Deploy interview-start
+        run: supabase functions deploy interview-start
+
+      - name: Deploy interview-turn
+        run: supabase functions deploy interview-turn
+
+      - name: Deploy interview-score
+        run: supabase functions deploy interview-score
+
+      - name: Deploy interview-human-confirm
+        run: supabase functions deploy interview-human-confirm
