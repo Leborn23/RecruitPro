@@ -1,0 +1,23 @@
+project_id = "wpvoshecckauscwqtxpq"
+
+[functions.interview-prepare]
+verify_jwt = false
+
+[functions.interview-start]
+verify_jwt = false
+
+[functions.interview-turn]
+verify_jwt = false
+
+[functions.interview-finish]
+verify_jwt = false
+
+[functions.interview-score]
+verify_jwt = false
+
+[functions.interview-human-confirm]
+verify_jwt = false
+
+[functions.interview-room-password]
+verify_jwt = false
+

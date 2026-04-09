@@ -1,0 +1,25 @@
+{
+  "salaries": [
+    {
+      "role": "Java高级架构师",
+      "city": "北京",
+      "averageSalary": 22000,
+      "minSalary": 13200,
+      "maxSalary": 33000
+    },
+    {
+      "role": "高级前端工程师",
+      "city": "北京",
+      "averageSalary": 18000,
+      "minSalary": 10800,
+      "maxSalary": 27000
+    },
+    {
+      "role": "AI大模型专家",
+      "city": "北京",
+      "averageSalary": 30000,
+      "minSalary": 18000,
+      "maxSalary": 45000
+    }
+  ]
+}
