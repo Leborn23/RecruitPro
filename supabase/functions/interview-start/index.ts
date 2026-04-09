@@ -5,7 +5,9 @@ import {
   buildResumeText,
   invokeAgentStart,
   loadAgentLlmConfig,
-  mapAgentPlanToQuestionPlan
+  mapAgentPlanToQuestionPlan,
+  mapJobContextToJobProfile,
+  mapResumeContextToCandidateProfile
 } from '../_shared/agentGateway.ts';
 
 interface StartPayload {
@@ -117,7 +119,16 @@ Deno.serve(async (req) => {
       profile,
       projects: projects ?? []
     });
+    const candidateProfile = mapResumeContextToCandidateProfile({
+      candidate,
+      profile,
+      projects: projects ?? []
+    });
     const jdText = buildJobDescriptionText({
+      position,
+      parsedRequirement
+    });
+    const jobProfile = mapJobContextToJobProfile({
       position,
       parsedRequirement
     });
@@ -127,6 +138,8 @@ Deno.serve(async (req) => {
       session_id: sessionId,
       resume_text: resumeText,
       jd_text: jdText,
+      candidate_profile: candidateProfile,
+      job_profile: jobProfile,
       llm_config: llmConfig
     });
 
@@ -182,7 +195,9 @@ Deno.serve(async (req) => {
 
     if ((existingAiRows?.length ?? 0) === 0 && openingMessage) {
       const turnNo = await nextTurnNo(client, sessionId);
-      const firstTopic = String(agentResponse.interview_plan?.questions?.[0]?.topic ?? '').trim();
+      const firstQuestion = agentResponse.interview_plan?.questions?.[0];
+      const firstTopic = String(firstQuestion?.topic ?? '').trim();
+      const firstGuidance = String(firstQuestion?.answer_guidance ?? '').trim();
 
       const { error: insertTurnError } = await client.from('interview_turns').insert([
         {
@@ -195,6 +210,7 @@ Deno.serve(async (req) => {
             kind: 'question',
             question_id: 'agent-1',
             topic: firstTopic,
+            answer_guidance: firstGuidance,
             source: 'agent',
             step: 1
           }

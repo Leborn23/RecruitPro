@@ -24,6 +24,7 @@ type RoomMessage = {
   speaker: 'ai' | 'candidate';
   content: string;
   kind?: string;
+  answerGuidance?: string;
 };
 
 type RoomReport = {
@@ -157,6 +158,24 @@ function getTurnKind(metadata: unknown): string {
   return typeof kind === 'string' ? kind : '';
 }
 
+function dedupeRoomMessages(messages: RoomMessage[]): RoomMessage[] {
+  const output: RoomMessage[] = [];
+  for (const msg of messages) {
+    const prev = output[output.length - 1];
+    if (
+      prev &&
+      prev.speaker === msg.speaker &&
+      prev.kind === msg.kind &&
+      prev.answerGuidance === msg.answerGuidance &&
+      prev.content.trim() === msg.content.trim()
+    ) {
+      continue;
+    }
+    output.push(msg);
+  }
+  return output;
+}
+
 export default function InterviewRoom() {
   const navigate = useNavigate();
   const { interviewId: interviewIdParam } = useParams();
@@ -254,13 +273,21 @@ export default function InterviewRoom() {
 
   const syncTurns = async (sessionId: string): Promise<void> => {
     const turns = await fetchInterviewTurns(sessionId);
-    const nextMessages = turns
-      .filter((turn) => turn.speaker === 'ai' || turn.speaker === 'candidate')
-      .map((turn) => ({
-        speaker: turn.speaker as 'ai' | 'candidate',
-        content: turn.content,
-        kind: turn.speaker === 'ai' ? getTurnKind(turn.metadata) : ''
-      }));
+    const nextMessages = dedupeRoomMessages(
+      turns
+        .filter((turn) => turn.speaker === 'ai' || turn.speaker === 'candidate')
+        .map((turn) => ({
+          speaker: turn.speaker as 'ai' | 'candidate',
+          content: turn.content,
+          kind: turn.speaker === 'ai' ? getTurnKind(turn.metadata) : '',
+          answerGuidance:
+            turn.speaker === 'ai' && turn.metadata && typeof turn.metadata === 'object'
+              ? typeof (turn.metadata as Record<string, unknown>).answer_guidance === 'string'
+                ? String((turn.metadata as Record<string, unknown>).answer_guidance).trim()
+                : ''
+              : ''
+        }))
+    );
     setMessages(nextMessages);
   };
 
@@ -471,16 +498,14 @@ export default function InterviewRoom() {
       });
 
       setDraft('');
-      const aiReply = typeof turnResult?.ai_reply?.content === 'string' ? turnResult.ai_reply.content.trim() : '';
       const aiReplyKind = typeof turnResult?.ai_reply?.kind === 'string' ? turnResult.ai_reply.kind : '';
-      setMessages((prev) => [
-        ...prev,
-        { speaker: 'candidate', content: answer },
-        ...(aiReply ? [{ speaker: 'ai' as const, content: aiReply, kind: aiReplyKind }] : [])
-      ]);
+      await syncTurns(sessionId);
+      await syncTotalQuestionCount(sessionId);
 
       const inferredTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
-      if (!aiReply && inferredTotal > 0 && askedCount >= inferredTotal) {
+      if (aiReplyKind === 'closing') {
+        setNotice('当前题目已完成，请点击右侧“提交”生成评分报告。');
+      } else if (inferredTotal > 0 && askedCount >= inferredTotal) {
         setNotice('已完成全部题目，请点击右侧“提交”生成评分报告。');
       }
     } catch (err) {
@@ -610,6 +635,15 @@ export default function InterviewRoom() {
   const answerLocked = isInterviewClosed || busyAction === 'finish';
   const progressTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
   const completionRate = progressTotal > 0 ? Math.min(100, Math.round((answeredCount / progressTotal) * 100)) : 0;
+  const activePromptMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const msg = messages[index];
+      if (msg.speaker !== 'ai') continue;
+      if (msg.kind === 'closing') return null;
+      if (msg.kind === 'question' || msg.kind === 'followup') return msg;
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div className="min-h-screen bg-surface-container-low py-6">
@@ -771,6 +805,15 @@ export default function InterviewRoom() {
                   ))
                 )}
               </div>
+
+              {activePromptMessage?.answerGuidance ? (
+                <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
+                  <p className="text-xs font-semibold text-primary mb-1">当前作答提醒</p>
+                  <p className="text-sm text-on-surface whitespace-pre-wrap leading-relaxed">
+                    {activePromptMessage.answerGuidance}
+                  </p>
+                </div>
+              ) : null}
 
               <div className="mt-3 flex gap-2">
                 <input

@@ -97,6 +97,19 @@ Deno.serve(async (req) => {
 
     if (speaker === 'candidate') {
       const llmConfig = await loadAgentLlmConfig(adminClient);
+      const { data: sessionRow, error: sessionRowError } = await client
+        .from('interview_sessions')
+        .select('question_plan')
+        .eq('id', sessionId)
+        .single();
+
+      if (sessionRowError) {
+        throw new HttpError(500, `Read session question plan failed: ${sessionRowError.message}`);
+      }
+
+      const questionPlan = Array.isArray((sessionRow as { question_plan?: unknown } | null)?.question_plan)
+        ? ((sessionRow as { question_plan?: Array<Record<string, unknown>> }).question_plan ?? [])
+        : [];
       const { data: allTurns, error: allTurnsError } = await client
         .from('interview_turns')
         .select('id,turn_no,speaker,content,metadata')
@@ -128,6 +141,13 @@ Deno.serve(async (req) => {
         aiKind = 'closing';
       }
 
+      const currentQuestionPlan =
+        aiKind === 'question' && currentAskedCount > 0 ? questionPlan[currentAskedCount - 1] ?? null : null;
+      const answerGuidance =
+        currentQuestionPlan && typeof currentQuestionPlan.answer_guidance === 'string'
+          ? currentQuestionPlan.answer_guidance.trim()
+          : '';
+
       if (aiPrompt) {
         const aiTurnNo = await nextTurnNo(client, sessionId);
         const { data: insertedAiTurn, error: insertAiTurnError } = await client
@@ -144,7 +164,8 @@ Deno.serve(async (req) => {
                 source: 'agent',
                 asked_question_count: currentAskedCount,
                 answer_count: Number(agentResponse.state_snapshot?.answer_count ?? 0),
-                next_nodes: agentResponse.state_snapshot?.next_nodes ?? []
+                next_nodes: agentResponse.state_snapshot?.next_nodes ?? [],
+                answer_guidance: answerGuidance
               }
             }
           ])

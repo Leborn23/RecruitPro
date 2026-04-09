@@ -7,6 +7,22 @@ export interface AgentLlmConfigPayload {
   base_url?: string | null;
 }
 
+export interface AgentCandidateProfilePayload {
+  name: string;
+  skills: string[];
+  experience_years: number;
+  recent_roles: string[];
+  education_level?: string | null;
+  key_achievements: string[];
+}
+
+export interface AgentJobProfilePayload {
+  title: string;
+  required_skills: string[];
+  experience_years: number;
+  key_responsibilities: string[];
+}
+
 export interface AgentGatewayResponse {
   status?: string;
   thread_id?: string;
@@ -17,6 +33,7 @@ export interface AgentGatewayResponse {
       question_text?: string;
       expected_key_points?: string[];
       rendered_text?: string;
+      answer_guidance?: string;
     }>;
     estimated_duration_minutes?: number;
   } | null;
@@ -140,6 +157,11 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
+function normalizeExperienceYears(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
 function mapProviderToAgentProvider(provider: string): string {
   const normalized = provider.trim().toLowerCase();
   if (normalized === 'google') return 'gemini';
@@ -212,7 +234,8 @@ export function mapAgentPlanToQuestionPlan(interviewPlan: AgentGatewayResponse['
     difficulty: 'medium',
     prompt: String(question?.rendered_text ?? question?.question_text ?? '').trim(),
     expected_signals: Array.isArray(question?.expected_key_points) ? question.expected_key_points : [],
-    topic: String(question?.topic ?? '').trim()
+    topic: String(question?.topic ?? '').trim(),
+    answer_guidance: String(question?.answer_guidance ?? '').trim()
   }));
 }
 
@@ -256,6 +279,44 @@ export function buildResumeText(input: ResumeContextInput): string {
     .join('\n\n');
 }
 
+export function mapResumeContextToCandidateProfile(input: ResumeContextInput): AgentCandidateProfilePayload {
+  const explicitSkills = toStringArray(input.profile?.explicit_skills).slice(0, 15);
+  const inferredSkills = toStringArray(input.profile?.inferred_skills).slice(0, 10);
+  const workItems = toStringArray(input.profile?.work_experience).slice(0, 5);
+  const projectLines = (input.projects ?? [])
+    .slice(0, 5)
+    .map((project) =>
+      [
+        project.project_name?.trim(),
+        project.candidate_role?.trim(),
+        project.project_summary?.trim()
+      ]
+        .filter(Boolean)
+        .join(' | ')
+    )
+    .filter(Boolean);
+
+  const basicProfile =
+    input.profile?.basic_profile && typeof input.profile.basic_profile === 'object'
+      ? (input.profile.basic_profile as Record<string, unknown>)
+      : {};
+
+  return {
+    name: String(input.candidate.name ?? basicProfile.full_name ?? 'unknown').trim() || 'unknown',
+    skills: [...new Set([...explicitSkills, ...inferredSkills])].slice(0, 20),
+    experience_years: normalizeExperienceYears(basicProfile.years_of_experience),
+    recent_roles: [
+      String(input.candidate.title ?? basicProfile.current_title ?? '').trim(),
+      ...workItems
+    ].filter(Boolean).slice(0, 6),
+    education_level: typeof basicProfile.education_level === 'string' ? basicProfile.education_level.trim() : null,
+    key_achievements: [
+      String(input.candidate.highlight ?? '').trim(),
+      ...projectLines
+    ].filter(Boolean).slice(0, 8)
+  };
+}
+
 export function buildJobDescriptionText(input: JobContextInput): string {
   const mustHave = toStringArray(input.parsedRequirement?.must_have_skills).slice(0, 12);
   const niceToHave = toStringArray(input.parsedRequirement?.nice_to_have_skills).slice(0, 8);
@@ -275,6 +336,18 @@ export function buildJobDescriptionText(input: JobContextInput): string {
   ]
     .filter(Boolean)
     .join('\n\n');
+}
+
+export function mapJobContextToJobProfile(input: JobContextInput): AgentJobProfilePayload {
+  const mustHave = toStringArray(input.parsedRequirement?.must_have_skills).slice(0, 15);
+  const responsibilities = toStringArray(input.parsedRequirement?.core_responsibilities).slice(0, 8);
+
+  return {
+    title: String(input.position.title ?? 'unknown').trim() || 'unknown',
+    required_skills: mustHave,
+    experience_years: normalizeExperienceYears(input.position.min_exp),
+    key_responsibilities: responsibilities
+  };
 }
 
 export function mapAgentRecommendation(input: string | null | undefined): 'hire' | 'hold' | 'reject' | 'needs_review' {
@@ -387,6 +460,8 @@ export async function invokeAgentStart(payload: {
   session_id: string;
   resume_text: string;
   jd_text: string;
+  candidate_profile?: AgentCandidateProfilePayload | null;
+  job_profile?: AgentJobProfilePayload | null;
   llm_config?: AgentLlmConfigPayload | null;
 }): Promise<AgentGatewayResponse> {
   return await fetchAgent<AgentGatewayResponse>('/agent/start', {
