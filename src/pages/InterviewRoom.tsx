@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, Info, Play, Send, Timer } from 'lucide-react';
 import { fetchInterviewReportByInterview, fetchInterviewTurns, interviewRuntimeEdge } from '../lib/interviewRuntime';
@@ -160,14 +160,28 @@ function getTurnKind(metadata: unknown): string {
 
 function dedupeRoomMessages(messages: RoomMessage[]): RoomMessage[] {
   const output: RoomMessage[] = [];
+  const seenAiPrompts = new Set<string>();
   for (const msg of messages) {
+    const normalizedContent = msg.content.trim();
+    const promptSignature = `${msg.kind ?? ''}::${msg.answerGuidance ?? ''}::${normalizedContent}`;
+    if (
+      msg.speaker === 'ai' &&
+      (msg.kind === 'question' || msg.kind === 'followup') &&
+      normalizedContent
+    ) {
+      if (seenAiPrompts.has(promptSignature)) {
+        continue;
+      }
+      seenAiPrompts.add(promptSignature);
+    }
+
     const prev = output[output.length - 1];
     if (
       prev &&
       prev.speaker === msg.speaker &&
       prev.kind === msg.kind &&
       prev.answerGuidance === msg.answerGuidance &&
-      prev.content.trim() === msg.content.trim()
+      prev.content.trim() === normalizedContent
     ) {
       continue;
     }
@@ -197,6 +211,7 @@ export default function InterviewRoom() {
   const [accessGranted, setAccessGranted] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionFinalized = hasSubmitted || isClosedStatus(interview?.status);
 
   const askedCount = useMemo(
@@ -275,7 +290,11 @@ export default function InterviewRoom() {
     const turns = await fetchInterviewTurns(sessionId);
     const nextMessages = dedupeRoomMessages(
       turns
-        .filter((turn) => turn.speaker === 'ai' || turn.speaker === 'candidate')
+        .filter((turn) => {
+          if (turn.speaker !== 'ai' && turn.speaker !== 'candidate') return false;
+          if (turn.speaker === 'ai' && getTurnKind(turn.metadata) === 'closing') return false;
+          return true;
+        })
         .map((turn) => ({
           speaker: turn.speaker as 'ai' | 'candidate',
           content: turn.content,
@@ -395,6 +414,13 @@ export default function InterviewRoom() {
     return () => window.clearInterval(timer);
   }, [interview?.started_at, interview?.status]);
 
+  useEffect(() => {
+    const el = draftRef.current;
+    if (!el) return;
+    el.style.height = '0px';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [draft]);
+
   const handleVerifyPassword = async () => {
     if (!interview) return;
     if (!String(interview.room_password_set_at ?? '').trim()) {
@@ -489,6 +515,9 @@ export default function InterviewRoom() {
     setError('');
     setNotice('');
     try {
+      setDraft('');
+      setMessages((prev) => dedupeRoomMessages([...prev, { speaker: 'candidate', content: answer }]));
+
       const turnResult = await interviewRuntimeEdge.appendTurn<{ ai_reply?: { content?: string; kind?: string } }>({
         sessionId,
         speaker: 'candidate',
@@ -497,7 +526,6 @@ export default function InterviewRoom() {
         metadata: { source: 'candidate_room' }
       });
 
-      setDraft('');
       const aiReplyKind = typeof turnResult?.ai_reply?.kind === 'string' ? turnResult.ai_reply.kind : '';
       await syncTurns(sessionId);
       await syncTotalQuestionCount(sessionId);
@@ -561,6 +589,35 @@ export default function InterviewRoom() {
     setConfirmSubmitOpen(true);
   };
 
+  const statusKey = String(interview?.status ?? '').trim().toLowerCase();
+  const isInterviewClosed = sessionFinalized;
+  const hasInterviewStarted =
+    Boolean(interview?.started_at) || messages.length > 0 || statusKey === 'in_progress' || statusKey === 'completed';
+  const progressTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
+  const activePromptMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const msg = messages[index];
+      if (msg.speaker !== 'ai') continue;
+      if (msg.kind === 'closing') return null;
+      if (msg.kind === 'question' || msg.kind === 'followup') return msg;
+    }
+    return null;
+  }, [messages]);
+  const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal;
+  const hasOpenPrompt = Boolean(activePromptMessage);
+  const canStart = !!interview?.candidate_id && !isInterviewClosed && !hasInterviewStarted && busyAction === null;
+  const canSubmit =
+    hasInterviewStarted &&
+    !!interview?.session_id &&
+    !!draft.trim() &&
+    busyAction === null &&
+    !isInterviewClosed &&
+    hasOpenPrompt &&
+    !allQuestionsAnswered;
+  const canFinish = hasInterviewStarted && !!interview?.session_id && !isInterviewClosed && busyAction === null;
+  const answerLocked = isInterviewClosed || busyAction === 'finish' || !hasOpenPrompt || allQuestionsAnswered;
+  const completionRate = progressTotal > 0 ? Math.min(100, Math.round((answeredCount / progressTotal) * 100)) : 0;
+
   if (loading) {
     return (
       <div className="min-h-screen bg-surface-container-low flex items-center justify-center p-6">
@@ -623,27 +680,6 @@ export default function InterviewRoom() {
       </div>
     );
   }
-
-  const statusKey = String(interview.status ?? '').trim().toLowerCase();
-  const isInterviewClosed = sessionFinalized;
-  const hasInterviewStarted =
-    Boolean(interview.started_at) || messages.length > 0 || statusKey === 'in_progress' || statusKey === 'completed';
-
-  const canStart = !!interview.candidate_id && !isInterviewClosed && !hasInterviewStarted && busyAction === null;
-  const canSubmit = hasInterviewStarted && !!interview.session_id && !!draft.trim() && busyAction === null && !isInterviewClosed;
-  const canFinish = hasInterviewStarted && !!interview.session_id && !isInterviewClosed && busyAction === null;
-  const answerLocked = isInterviewClosed || busyAction === 'finish';
-  const progressTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
-  const completionRate = progressTotal > 0 ? Math.min(100, Math.round((answeredCount / progressTotal) * 100)) : 0;
-  const activePromptMessage = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const msg = messages[index];
-      if (msg.speaker !== 'ai') continue;
-      if (msg.kind === 'closing') return null;
-      if (msg.kind === 'question' || msg.kind === 'followup') return msg;
-    }
-    return null;
-  }, [messages]);
 
   return (
     <div className="min-h-screen bg-surface-container-low py-6">
@@ -815,8 +851,9 @@ export default function InterviewRoom() {
                 </div>
               ) : null}
 
-              <div className="mt-3 flex gap-2">
-                <input
+              <div className="mt-3 flex items-end gap-2">
+                <textarea
+                  ref={draftRef}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   disabled={answerLocked}
@@ -826,8 +863,9 @@ export default function InterviewRoom() {
                       void handleSubmitTurn();
                     }
                   }}
-                  placeholder={answerLocked ? '已提交，无法继续作答' : '输入你的回答，按 Enter 发送'}
-                  className="flex-1 rounded-md border border-outline-variant/25 bg-surface-container-lowest px-3 py-2 text-sm outline-none focus:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  rows={1}
+                  placeholder={answerLocked ? '已提交，无法继续作答' : '输入你的回答，Enter 发送，Shift+Enter 换行'}
+                  className="flex-1 min-h-[42px] max-h-[180px] resize-none overflow-y-auto rounded-md border border-outline-variant/25 bg-surface-container-lowest px-3 py-2 text-sm leading-6 outline-none focus:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={() => void handleSubmitTurn()}
@@ -935,6 +973,7 @@ export default function InterviewRoom() {
     </div>
   );
 }
+
 
 
 

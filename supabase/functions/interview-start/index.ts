@@ -195,9 +195,9 @@ Deno.serve(async (req) => {
 
     if ((existingAiRows?.length ?? 0) === 0 && openingMessage) {
       const turnNo = await nextTurnNo(client, sessionId);
-      const firstQuestion = agentResponse.interview_plan?.questions?.[0];
-      const firstTopic = String(firstQuestion?.topic ?? '').trim();
-      const firstGuidance = String(firstQuestion?.answer_guidance ?? '').trim();
+      const firstPlannedQuestion = agentResponse.interview_plan?.questions?.[0];
+      const firstTopic = String(firstPlannedQuestion?.topic ?? '').trim();
+      const firstGuidance = String(firstPlannedQuestion?.answer_guidance ?? '').trim();
 
       const { error: insertTurnError } = await client.from('interview_turns').insert([
         {

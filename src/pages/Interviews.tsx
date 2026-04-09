@@ -41,6 +41,19 @@ type ScoreReportView = {
   strengths?: string[];
   risks?: string[];
   evidence?: Array<{ turn_id?: string; turn_no?: number; excerpt?: string }>;
+  question_evaluations?: Array<{
+    question_index?: number;
+    question: string;
+    answer: string;
+    feedback: string;
+    missing_logic_elements: string[];
+    dimensions: {
+      technical_depth?: number;
+      communication_logic?: number;
+      problem_solving?: number;
+    };
+    score: number | null;
+  }>;
   scoring_profile?: string;
   min_answer_required?: number;
   answered_count?: number;
@@ -195,6 +208,14 @@ function buildConclusionItems(report: ScoreReportView): string[] {
 }
 
 function buildEvidenceItems(report: ScoreReportView): string[] {
+  const questionEvidence = (report.question_evaluations ?? []).slice(0, 3);
+  if (questionEvidence.length > 0) {
+    return questionEvidence.map((item, index) => {
+      const no = (item.question_index ?? index) + 1;
+      return `第 ${no} 题：${item.question || '（无题目）'}`;
+    });
+  }
+
   const evidence = (report.evidence ?? []).slice(0, 3);
   if (evidence.length === 0) return ['暂无可展示证据片段。'];
   return evidence.map((item) => `第 ${item.turn_no ?? '-'} 轮：${String(item.excerpt ?? '').trim() || '（无文本）'}`);
@@ -244,6 +265,46 @@ function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
       })
     : [];
 
+  const questionEvaluations = Array.isArray(row.evidence)
+    ? row.evidence
+        .map((item, index) => {
+          const data = (item ?? {}) as Record<string, unknown>;
+          const question = String(data.question ?? '').trim();
+          const answer = String(data.answer ?? '').trim();
+          const feedback = String(data.feedback ?? '').trim();
+          if (!question && !answer && !feedback) return null;
+
+          const dimensionsRaw =
+            data.dimensions && typeof data.dimensions === 'object'
+              ? (data.dimensions as Record<string, unknown>)
+              : {};
+          const technicalDepth = Number(dimensionsRaw.technical_depth ?? 0);
+          const communicationLogic = Number(dimensionsRaw.communication_logic ?? 0);
+          const problemSolving = Number(dimensionsRaw.problem_solving ?? 0);
+          const weightedScore =
+            [technicalDepth, communicationLogic, problemSolving].every((value) => Number.isFinite(value))
+              ? Math.round(technicalDepth * 5 + communicationLogic * 3 + problemSolving * 2)
+              : null;
+
+          return {
+            question_index: Number(data.question_index ?? index) || index,
+            question,
+            answer,
+            feedback,
+            missing_logic_elements: Array.isArray(data.missing_logic_elements)
+              ? data.missing_logic_elements.map((value) => String(value ?? '').trim()).filter(Boolean)
+              : [],
+            dimensions: {
+              technical_depth: Number.isFinite(technicalDepth) ? technicalDepth : undefined,
+              communication_logic: Number.isFinite(communicationLogic) ? communicationLogic : undefined,
+              problem_solving: Number.isFinite(problemSolving) ? problemSolving : undefined
+            },
+            score: weightedScore
+          };
+        })
+        .filter(Boolean) as ScoreReportView['question_evaluations']
+    : [];
+
   return {
     id: row.id,
     interview_id: row.interview_id,
@@ -255,6 +316,7 @@ function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
     strengths,
     risks,
     evidence,
+    question_evaluations: questionEvaluations,
     human_confirmed: row.human_confirmed,
     human_confirmed_at: row.human_confirmed_at
   };
@@ -1039,6 +1101,79 @@ export default function Interviews() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold text-on-surface mb-2">逐题评分</h4>
+                {reportData.question_evaluations && reportData.question_evaluations.length > 0 ? (
+                  <div className="space-y-3">
+                    {reportData.question_evaluations.map((item, index) => (
+                      <div
+                        key={`question-eval-${item.question_index ?? index}`}
+                        className="rounded border border-outline-variant/20 bg-surface-container-low px-4 py-3 space-y-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="text-xs text-on-surface-variant">第 {(item.question_index ?? index) + 1} 题</p>
+                            <p className="text-sm font-semibold text-on-surface whitespace-pre-wrap">{item.question || '（无题目）'}</p>
+                          </div>
+                          <div className="rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                            单题分数：{item.score ?? '-'}
+                          </div>
+                        </div>
+
+                        <div className="grid sm:grid-cols-3 gap-2 text-xs">
+                          <div className="rounded border border-outline-variant/15 bg-surface-container-lowest px-3 py-2 flex justify-between">
+                            <span className="text-on-surface-variant">技术深度</span>
+                            <span className="font-semibold text-on-surface">{item.dimensions.technical_depth ?? '-'}</span>
+                          </div>
+                          <div className="rounded border border-outline-variant/15 bg-surface-container-lowest px-3 py-2 flex justify-between">
+                            <span className="text-on-surface-variant">表达逻辑</span>
+                            <span className="font-semibold text-on-surface">{item.dimensions.communication_logic ?? '-'}</span>
+                          </div>
+                          <div className="rounded border border-outline-variant/15 bg-surface-container-lowest px-3 py-2 flex justify-between">
+                            <span className="text-on-surface-variant">解决问题</span>
+                            <span className="font-semibold text-on-surface">{item.dimensions.problem_solving ?? '-'}</span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-semibold text-on-surface">候选人回答</p>
+                          <p className="text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed">
+                            {item.answer || '（无回答记录）'}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-semibold text-on-surface">AI 评语</p>
+                          <p className="text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed">
+                            {item.feedback || '（无评语）'}
+                          </p>
+                        </div>
+
+                        {item.missing_logic_elements.length > 0 ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs font-semibold text-on-surface">缺失点</p>
+                            <div className="flex flex-wrap gap-2">
+                              {item.missing_logic_elements.map((gap, gapIndex) => (
+                                <span
+                                  key={`question-eval-gap-${index}-${gapIndex}`}
+                                  className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700"
+                                >
+                                  {gap}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-3 text-xs text-on-surface-variant">
+                    当前报告尚未返回逐题评估。
+                  </div>
+                )}
               </div>
 
                 <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-xs text-on-surface">
