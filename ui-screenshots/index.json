@@ -1,0 +1,190 @@
+{
+  "candidateId": null,
+  "interviewId": null,
+  "results": [
+    {
+      "name": "login",
+      "path": "/login",
+      "finalUrl": "http://localhost:5174/login",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\01-login.png",
+      "ok": true
+    },
+    {
+      "name": "reset-password",
+      "path": "/reset-password",
+      "finalUrl": "http://localhost:5174/reset-password",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\02-reset-password.png",
+      "ok": true
+    },
+    {
+      "name": "dashboard",
+      "path": "/",
+      "finalUrl": "http://localhost:5174/",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\03-dashboard.png",
+      "ok": true
+    },
+    {
+      "name": "preview-hub",
+      "path": "/preview-hub",
+      "finalUrl": "http://localhost:5174/preview-hub",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\04-preview-hub.png",
+      "ok": true
+    },
+    {
+      "name": "command-center-preview",
+      "path": "/command-center-preview",
+      "finalUrl": "http://localhost:5174/command-center-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\05-command-center-preview.png",
+      "ok": true
+    },
+    {
+      "name": "dashboard-command-preview",
+      "path": "/dashboard-command-preview",
+      "finalUrl": "http://localhost:5174/dashboard-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\06-dashboard-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "positions-command-preview",
+      "path": "/positions-command-preview",
+      "finalUrl": "http://localhost:5174/positions-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\07-positions-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "candidates-command-preview",
+      "path": "/candidates-command-preview",
+      "finalUrl": "http://localhost:5174/candidates-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\08-candidates-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "screening-command-preview",
+      "path": "/screening-command-preview",
+      "finalUrl": "http://localhost:5174/screening-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\09-screening-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "interviews-command-preview",
+      "path": "/interviews-command-preview",
+      "finalUrl": "http://localhost:5174/interviews-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\10-interviews-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "salary-command-preview",
+      "path": "/salary-command-preview",
+      "finalUrl": "http://localhost:5174/salary-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\11-salary-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "settings-command-preview",
+      "path": "/settings-command-preview",
+      "finalUrl": "http://localhost:5174/settings-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\12-settings-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "profile-command-preview",
+      "path": "/profile-command-preview",
+      "finalUrl": "http://localhost:5174/profile-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\13-profile-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "candidate-detail-command-preview",
+      "path": "/candidate-detail-command-preview",
+      "finalUrl": "http://localhost:5174/candidate-detail-command-preview",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\14-candidate-detail-command-preview.png",
+      "ok": true
+    },
+    {
+      "name": "positions",
+      "path": "/positions",
+      "finalUrl": "http://localhost:5174/positions",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\15-positions.png",
+      "ok": true
+    },
+    {
+      "name": "screening",
+      "path": "/screening",
+      "finalUrl": "http://localhost:5174/screening",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\16-screening.png",
+      "ok": true
+    },
+    {
+      "name": "candidates",
+      "path": "/candidates",
+      "finalUrl": "http://localhost:5174/candidates",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\17-candidates.png",
+      "ok": true
+    },
+    {
+      "name": "interviews",
+      "path": "/interviews",
+      "finalUrl": "http://localhost:5174/interviews",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\18-interviews.png",
+      "ok": true
+    },
+    {
+      "name": "salary",
+      "path": "/salary",
+      "finalUrl": "http://localhost:5174/salary",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\19-salary.png",
+      "ok": true
+    },
+    {
+      "name": "settings",
+      "path": "/settings",
+      "finalUrl": "http://localhost:5174/settings/organization",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\20-settings.png",
+      "ok": true
+    },
+    {
+      "name": "settings-organization",
+      "path": "/settings/organization",
+      "finalUrl": "http://localhost:5174/settings/organization",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\21-settings-organization.png",
+      "ok": true
+    },
+    {
+      "name": "settings-ai-policy",
+      "path": "/settings/ai-policy",
+      "finalUrl": "http://localhost:5174/settings/ai-policy",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\22-settings-ai-policy.png",
+      "ok": true
+    },
+    {
+      "name": "settings-access",
+      "path": "/settings/access",
+      "finalUrl": "http://localhost:5174/settings/access",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\23-settings-access.png",
+      "ok": true
+    },
+    {
+      "name": "profile",
+      "path": "/profile",
+      "finalUrl": "http://localhost:5174/profile",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\24-profile.png",
+      "ok": true
+    },
+    {
+      "name": "candidate-detail",
+      "path": "/candidates/00000000-0000-0000-0000-000000000000",
+      "finalUrl": "http://localhost:5174/candidates/00000000-0000-0000-0000-000000000000",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\25-candidate-detail.png",
+      "ok": true,
+      "note": "fallback empty-id route screenshot"
+    },
+    {
+      "name": "interview-room",
+      "path": "/interview-room/00000000-0000-0000-0000-000000000000",
+      "finalUrl": "http://localhost:5174/interview-room/00000000-0000-0000-0000-000000000000",
+      "filePath": "D:\\project\\RecruitPro_\\ui-screenshots\\26-interview-room.png",
+      "ok": true,
+      "note": "fallback empty-id route screenshot"
+    }
+  ]
+}

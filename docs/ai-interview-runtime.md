@@ -1,45 +1,21 @@
-﻿# AI Interview Edge Functions
+# AI Interview Runtime
 
-This project now includes a minimal runnable AI interview runtime with 5 Supabase Edge Functions:
+RecruitPro now uses FastAPI as the business backend for the full AI interview flow.
 
-- `interview-prepare`
-- `interview-start`
-- `interview-turn`
-- `interview-finish`
-- `interview-score`
-- `interview-human-confirm`
+## Current flow
 
-## Deployment
+- frontend -> FastAPI
+- FastAPI -> external agent
+- FastAPI -> Supabase tables
 
-```bash
-npx supabase functions deploy interview-prepare
-npx supabase functions deploy interview-start
-npx supabase functions deploy interview-turn
-npx supabase functions deploy interview-finish
-npx supabase functions deploy interview-score
-npx supabase functions deploy interview-human-confirm
-```
+## Required services
 
-## Agent Gateway
+1. FastAPI backend on `http://127.0.0.1:8010`
+2. external agent service on `AGENT_BASE_URL`
 
-The AI interview flow now depends on an external FastAPI gateway backed by the Python agent.
+## Required database migration
 
-Required function secrets:
-
-```text
-AGENT_BASE_URL=http://<agent-host>:8000
-AGENT_SHARED_SECRET=<same-secret-as-agent>
-AGENT_TIMEOUT_MS=20000
-```
-
-See:
-
-- `docs/agent-integration-runtime.md`
-- `D:\project\agent\recruitment-agent\docs\FASTAPI_GATEWAY_SETUP.md`
-
-## Required Database Migration
-
-Run migration:
+Run:
 
 - `supabase/migrations/202604020017_ai_interview_runtime.sql`
 
@@ -50,126 +26,18 @@ It creates:
 - `interview_turns`
 - `interview_reports`
 
-## Request Contracts
+## Core FastAPI endpoints
 
-All endpoints are `POST` and require bearer auth.
+- `POST /api/interviews/prepare`
+- `POST /api/interviews/start`
+- `POST /api/interviews/turn`
+- `POST /api/interviews/finish`
+- `POST /api/interviews/score`
+- `POST /api/interviews/human-confirm`
+- `POST /api/interviews/room-password`
 
-### 1) interview-prepare
+## Frontend integration
 
-Request body:
+Use:
 
-```json
-{
-  "interviewId": "<uuid>",
-  "candidateId": "<uuid>",
-  "positionId": "<uuid>",
-  "mode": "async_qa"
-}
-```
-
-Response highlights:
-
-- `session_id`
-- `question_plan`
-- interview moves to `ready`
-
-### 2) interview-start
-
-Request body:
-
-```json
-{
-  "interviewId": "<uuid>",
-  "sessionId": "<uuid>"
-}
-```
-
-Response highlights:
-
-- first AI question inserted when missing
-- session moves to `running`
-- interview moves to `in_progress`
-
-### 3) interview-turn
-
-Request body:
-
-```json
-{
-  "sessionId": "<uuid>",
-  "speaker": "candidate",
-  "content": "...",
-  "inputMode": "text",
-  "metadata": {}
-}
-```
-
-Response highlights:
-
-- user turn inserted
-- AI follow-up / next question inserted (when speaker is candidate)
-
-### 4) interview-finish
-
-Request body:
-
-```json
-{
-  "interviewId": "<uuid>",
-  "sessionId": "<uuid>"
-}
-```
-
-Response highlights:
-
-- session moves to `scoring`
-- interview marked `completed` with `ended_at`
-
-### 5) interview-score
-
-Request body:
-
-```json
-{
-  "interviewId": "<uuid>",
-  "sessionId": "<uuid>"
-}
-```
-
-Response highlights:
-
-- computes structured rubric scores
-- upserts `interview_reports`
-- session moves to `done`
-- interview `ai_report_id` is linked
-
-## Rubric (Rule-Based V1)
-
-Current scoring is deterministic rule-based (safe MVP), covering dimensions:
-
-- `role_fit`
-- `technical_depth`
-- `project_evidence`
-- `problem_solving`
-- `communication`
-- `ownership`
-
-Outputs include:
-
-- overall score
-- per-dimension scores
-- strengths
-- risks
-- evidence excerpts
-- recommendation (`hire/hold/reject/needs_review`)
-
-## Frontend Integration
-
-Use `src/lib/interviewRuntime.ts` helper methods and edge wrappers:
-
-- `interviewRuntimeEdge.prepareInterview(...)`
-- `interviewRuntimeEdge.startInterview(...)`
-- `interviewRuntimeEdge.appendTurn(...)`
-- `interviewRuntimeEdge.finishInterview(...)`
-- `interviewRuntimeEdge.scoreInterview(...)`
-
+- [src/lib/interviewRuntime.ts](D:/project/RecruitPro_/src/lib/interviewRuntime.ts)
