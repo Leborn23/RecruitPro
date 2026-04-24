@@ -2,6 +2,9 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, Info, Play, Send, Timer } from 'lucide-react';
 import { fetchInterviewReportByInterview, fetchInterviewTurns, interviewRuntimeEdge } from '../lib/interviewRuntime';
+import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
+import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
+import { deriveInterviewClockView, deriveInterviewQuestionMetrics } from '../lib/interviewRoomState';
 import { supabase } from '../lib/supabase';
 
 type RoomInterviewRow = {
@@ -62,8 +65,6 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: '未到场',
   failed: '异常中断'
 };
-
-const INTERVIEW_DURATION_MINUTES = 20;
 
 function toErrorMessage(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'message' in error) {
@@ -127,13 +128,6 @@ function toReport(raw: unknown): RoomReport | null {
 function formatDateTime(value: string | null): string {
   if (!value) return '未设置';
   return value.replace('T', ' ').slice(0, 16);
-}
-
-function formatDuration(totalSeconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const mm = Math.floor(safeSeconds / 60);
-  const ss = safeSeconds % 60;
-  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 }
 
 function isClosedStatus(status: string | null | undefined): boolean {
@@ -207,6 +201,7 @@ export default function InterviewRoom() {
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [totalQuestionCount, setTotalQuestionCount] = useState<number | null>(null);
+  const [configuredQuestionCount, setConfiguredQuestionCount] = useState(DEFAULT_INTERVIEW_QUESTION_COUNT);
 
   const [accessGranted, setAccessGranted] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
@@ -214,64 +209,28 @@ export default function InterviewRoom() {
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionFinalized = hasSubmitted || isClosedStatus(interview?.status);
 
-  const askedCount = useMemo(
-    () => messages.filter((msg) => msg.speaker === 'ai' && msg.kind === 'question').length,
-    [messages]
+  const progressMetrics = useMemo(
+    () => deriveInterviewQuestionMetrics(messages, totalQuestionCount, sessionFinalized),
+    [messages, sessionFinalized, totalQuestionCount]
   );
-  const answeredCount = useMemo(() => {
-    const questionIndexes: number[] = [];
-    messages.forEach((msg, index) => {
-      if (msg.speaker === 'ai' && msg.kind === 'question') {
-        questionIndexes.push(index);
-      }
-    });
+  const askedCount = progressMetrics.askedCount;
+  const answeredCount = progressMetrics.completedCount;
+  const progressTotal = progressMetrics.totalCount;
+  const completionRate = progressMetrics.completionRate;
+  const effectiveQuestionCount =
+    (totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : configuredQuestionCount) || DEFAULT_INTERVIEW_QUESTION_COUNT;
+  const interviewDurationMinutes = getInterviewDurationMinutesForQuestionCount(effectiveQuestionCount);
 
-    const totalQuestions = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : questionIndexes.length;
-
-    let completed = 0;
-    questionIndexes.forEach((questionIndex, idx) => {
-      const nextQuestionIndex = idx + 1 < questionIndexes.length ? questionIndexes[idx + 1] : messages.length;
-      const segment = messages.slice(questionIndex + 1, nextQuestionIndex);
-      const hasCandidateReply = segment.some((msg) => msg.speaker === 'candidate');
-      const movedToNextQuestion = idx + 1 < questionIndexes.length;
-      const closedBySystem = segment.some((msg) => msg.speaker === 'ai' && msg.kind === 'closing');
-      const reachedQuestionEnd = idx === questionIndexes.length - 1 && hasCandidateReply && questionIndexes.length >= totalQuestions;
-      if (hasCandidateReply && (movedToNextQuestion || closedBySystem || reachedQuestionEnd || sessionFinalized)) {
-        completed += 1;
-      }
-    });
-
-    return completed;
-  }, [messages, sessionFinalized, totalQuestionCount]);
-
-  const timerView = useMemo(() => {
-    const totalSeconds = INTERVIEW_DURATION_MINUTES * 60;
-    if (!interview?.started_at) {
-      return {
-        title: '未开始',
-        value: formatDuration(totalSeconds),
-        hint: `默认时长 ${INTERVIEW_DURATION_MINUTES} 分钟`
-      };
-    }
-
-    const startMs = new Date(interview.started_at).getTime();
-    const elapsed = Math.max(0, Math.floor((nowMs - startMs) / 1000));
-    const left = totalSeconds - elapsed;
-
-    if (left >= 0) {
-      return {
-        title: '剩余时间',
-        value: formatDuration(left),
-        hint: `已进行 ${formatDuration(elapsed)}`
-      };
-    }
-
-    return {
-      title: '已超时',
-      value: `+${formatDuration(Math.abs(left))}`,
-      hint: '建议尽快提交'
-    };
-  }, [interview?.started_at, nowMs]);
+  const timerView = useMemo(
+    () =>
+      deriveInterviewClockView({
+        startedAt: interview?.started_at,
+        nowMs,
+        durationMinutes: interviewDurationMinutes,
+        closed: sessionFinalized
+      }),
+    [interview?.started_at, interviewDurationMinutes, nowMs, sessionFinalized]
+  );
 
   const readInterview = async (id: string): Promise<RoomInterviewRow> => {
     const { data, error: queryError } = await supabase
@@ -286,7 +245,7 @@ export default function InterviewRoom() {
     return data as RoomInterviewRow;
   };
 
-  const syncTurns = async (sessionId: string): Promise<void> => {
+  const syncTurns = async (sessionId: string): Promise<RoomMessage[]> => {
     const turns = await fetchInterviewTurns(sessionId);
     const nextMessages = dedupeRoomMessages(
       turns
@@ -308,9 +267,10 @@ export default function InterviewRoom() {
         }))
     );
     setMessages(nextMessages);
+    return nextMessages;
   };
 
-  const syncTotalQuestionCount = async (sessionId: string): Promise<void> => {
+  const syncTotalQuestionCount = async (sessionId: string): Promise<number | null> => {
     const { data, error: sessionError } = await supabase
       .from('interview_sessions')
       .select('question_plan')
@@ -319,16 +279,17 @@ export default function InterviewRoom() {
 
     if (sessionError) {
       setTotalQuestionCount(null);
-      return;
+      return null;
     }
 
     const rawPlan = (data as { question_plan?: unknown } | null)?.question_plan;
     if (!Array.isArray(rawPlan)) {
       setTotalQuestionCount(null);
-      return;
+      return null;
     }
 
     setTotalQuestionCount(rawPlan.length);
+    return rawPlan.length;
   };
 
   const syncReport = async (id: string): Promise<void> => {
@@ -347,6 +308,11 @@ export default function InterviewRoom() {
 
     if (queryError) return null;
     return (data?.p_id as string | null) ?? null;
+  };
+
+  const resolveInterviewQuestionCount = async (): Promise<number> => {
+    const { data } = await supabase.from('company_settings').select('interview_question_count').single();
+    return normalizeInterviewQuestionCount((data as { interview_question_count?: unknown } | null)?.interview_question_count);
   };
 
   const getRoomAccessKey = (id: string) => `interview-room-auth:${id}`;
@@ -371,6 +337,8 @@ export default function InterviewRoom() {
         if (cancelled) return;
         setInterview(interviewRow);
         setHasSubmitted(isClosedStatus(interviewRow.status));
+        const questionCount = await resolveInterviewQuestionCount();
+        if (!cancelled) setConfiguredQuestionCount(questionCount);
 
         const passwordSetAt = String(interviewRow.room_password_set_at ?? '').trim();
         if (!passwordSetAt) {
@@ -468,12 +436,14 @@ export default function InterviewRoom() {
       if (!positionId) {
         throw new Error('候选人未关联岗位，无法生成题目。');
       }
+      const questionCount = await resolveInterviewQuestionCount();
 
       const prepared = await interviewRuntimeEdge.prepareInterview<{ session_id?: string }>({
         interviewId: interview.id,
         candidateId: interview.candidate_id,
         positionId,
-        mode: 'async_qa'
+        mode: 'async_qa',
+        questionCount
       });
 
       const sessionId = String(prepared?.session_id ?? interview.session_id ?? '').trim();
@@ -527,13 +497,13 @@ export default function InterviewRoom() {
       });
 
       const aiReplyKind = typeof turnResult?.ai_reply?.kind === 'string' ? turnResult.ai_reply.kind : '';
-      await syncTurns(sessionId);
-      await syncTotalQuestionCount(sessionId);
+      const nextMessages = await syncTurns(sessionId);
+      const nextTotal = await syncTotalQuestionCount(sessionId);
+      const nextMetrics = deriveInterviewQuestionMetrics(nextMessages, nextTotal, false);
 
-      const inferredTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
       if (aiReplyKind === 'closing') {
         setNotice('当前题目已完成，请点击右侧“提交”生成评分报告。');
-      } else if (inferredTotal > 0 && askedCount >= inferredTotal) {
+      } else if (nextMetrics.totalCount > 0 && nextMetrics.completedCount >= nextMetrics.totalCount) {
         setNotice('已完成全部题目，请点击右侧“提交”生成评分报告。');
       }
     } catch (err) {
@@ -593,7 +563,6 @@ export default function InterviewRoom() {
   const isInterviewClosed = sessionFinalized;
   const hasInterviewStarted =
     Boolean(interview?.started_at) || messages.length > 0 || statusKey === 'in_progress' || statusKey === 'completed';
-  const progressTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
   const activePromptMessage = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const msg = messages[index];
@@ -605,6 +574,7 @@ export default function InterviewRoom() {
   }, [messages]);
   const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal;
   const hasOpenPrompt = Boolean(activePromptMessage);
+  const isOvertime = timerView.state === 'overtime';
   const canStart = !!interview?.candidate_id && !isInterviewClosed && !hasInterviewStarted && busyAction === null;
   const canSubmit =
     hasInterviewStarted &&
@@ -613,10 +583,43 @@ export default function InterviewRoom() {
     busyAction === null &&
     !isInterviewClosed &&
     hasOpenPrompt &&
-    !allQuestionsAnswered;
+    !allQuestionsAnswered &&
+    !isOvertime;
   const canFinish = hasInterviewStarted && !!interview?.session_id && !isInterviewClosed && busyAction === null;
-  const answerLocked = isInterviewClosed || busyAction === 'finish' || !hasOpenPrompt || allQuestionsAnswered;
-  const completionRate = progressTotal > 0 ? Math.min(100, Math.round((answeredCount / progressTotal) * 100)) : 0;
+  const answerLocked = isInterviewClosed || busyAction === 'finish' || !hasOpenPrompt || allQuestionsAnswered || isOvertime;
+  const currentQuestionLabel = !hasInterviewStarted
+    ? '未开始'
+    : progressTotal > 0
+      ? allQuestionsAnswered
+        ? `已完成 ${progressTotal}/${progressTotal}`
+        : `第 ${Math.min(answeredCount + 1, progressTotal)} / ${progressTotal} 题`
+      : askedCount > 0
+        ? `已提问 ${askedCount} 题`
+        : '等待第 1 题';
+  const saveStatusLabel =
+    busyAction === 'turn'
+      ? '正在保存本题回答'
+      : messages.some((msg) => msg.speaker === 'candidate')
+        ? '最近一次回答已记录'
+        : draft.trim()
+          ? '草稿未发送'
+          : '发送后立即记录';
+  const submissionRuleLabel = isInterviewClosed
+    ? '本场已提交，不可继续编辑'
+    : isOvertime
+      ? '已超时，当前仅允许提交'
+      : allQuestionsAnswered
+        ? '题目已完成，请直接提交'
+        : '回答当前题目后可继续下一题';
+  const roomStateLabel = isInterviewClosed
+    ? '已提交'
+    : isOvertime
+      ? '超时待提交'
+      : allQuestionsAnswered
+        ? '待提交'
+        : hasOpenPrompt
+          ? '作答中'
+          : '等待题目';
 
   if (loading) {
     return (
@@ -682,35 +685,85 @@ export default function InterviewRoom() {
   }
 
   return (
-    <div className="min-h-screen bg-surface-container-low py-6">
-      <div className="max-w-5xl mx-auto px-4 space-y-4">
-        <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h1 className="text-xl font-semibold text-on-surface">AI 线上考场</h1>
-            <p className="text-sm text-on-surface-variant">
-              候选人：{interview.name} · 岗位：{interview.position || '未填写'} · 场次：{interview.stage || '未设置'}
-            </p>
-            <p className="text-xs text-on-surface-variant">
-              面试时间：{formatDateTime(interview.schedule_time)} · 当前状态：{toStatusLabel(interview.status)}
-            </p>
+    <div className="min-h-screen bg-[#f5f9ff] py-6">
+      <div className="max-w-6xl mx-auto px-4 space-y-5">
+        <div className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+          <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] lg:p-6">
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#426a9a]">
+                <Timer className="h-3.5 w-3.5" />
+                Interview Room
+              </div>
+              <div className="space-y-1">
+                <h1 className="text-3xl font-semibold tracking-tight text-[#16355f]">在线考核控制台</h1>
+                <p className="text-sm text-[#5d7896]">
+                  候选人：{interview.name} · 岗位：{interview.position || '未填写'} · 场次：{interview.stage || '未设置'}
+                </p>
+                <p className="text-sm text-[#5d7896]">
+                  面试时间：{formatDateTime(interview.schedule_time)} · 当前状态：{toStatusLabel(interview.status)}
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-4 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">当前题目</p>
+                  <p className="mt-1 text-lg font-semibold text-[#16355f]">{currentQuestionLabel}</p>
+                  <p className="mt-1 text-xs text-[#6b86a4]">已提问 {askedCount} · 已完成 {answeredCount}</p>
+                </div>
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-4 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">{timerView.title}</p>
+                  <p className={`mt-1 text-lg font-semibold ${isOvertime ? 'text-[#c43d4b]' : 'text-[#16355f]'}`}>{timerView.value}</p>
+                  <p className="mt-1 text-xs text-[#6b86a4]">{timerView.hint}</p>
+                </div>
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-4 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">保存状态</p>
+                  <p className="mt-1 text-lg font-semibold text-[#16355f]">{saveStatusLabel}</p>
+                  <p className="mt-1 text-xs text-[#6b86a4]">发送回答后立即写入记录</p>
+                </div>
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-4 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">提交规则</p>
+                  <p className="mt-1 text-lg font-semibold text-[#16355f]">{roomStateLabel}</p>
+                  <p className="mt-1 text-xs text-[#6b86a4]">{submissionRuleLabel}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">总题目</p>
+                  <p className="text-lg font-semibold text-[#16355f]">{progressTotal || '-'}</p>
+                </div>
+                <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">已完成</p>
+                  <p className="text-lg font-semibold text-[#16355f]">{answeredCount}</p>
+                </div>
+                <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3">
+                  <p className="text-[11px] text-[#6b86a4]">完成率</p>
+                  <p className="text-lg font-semibold text-[#16355f]">{completionRate}%</p>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={() => navigate('/interviews')}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#c7daf6] bg-white px-3 py-2 text-sm font-medium text-[#355b87] hover:bg-[#eef5ff] transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" /> 返回中控
+                </button>
+              </div>
+            </div>
           </div>
-          <button
-            onClick={() => navigate('/interviews')}
-            className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md bg-surface-container-high text-on-surface text-sm hover:bg-surface-container-high/80 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" /> 返回中控
-          </button>
         </div>
 
         {error && (
-          <div className="rounded-xl border border-error/20 bg-error/10 px-4 py-3 text-sm text-error flex items-center gap-2">
+          <div className="rounded-[20px] border border-error/20 bg-[#fff6f8] px-4 py-3 text-sm text-error flex items-center gap-2">
             <AlertCircle className="w-4 h-4" />
             {error}
           </div>
         )}
 
         {notice && (
-          <div className="rounded-xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm text-primary flex items-center gap-2">
+          <div className="rounded-[20px] border border-[#c7daf6] bg-[#f4f8ff] px-4 py-3 text-sm text-[#1f5fbf] flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4" />
             {notice}
           </div>
@@ -722,7 +775,7 @@ export default function InterviewRoom() {
             onClick={() => setConfirmSubmitOpen(false)}
           >
             <div
-              className="w-full max-w-lg rounded-xl border border-outline-variant/20 bg-surface-container-lowest shadow-2xl overflow-hidden"
+              className="w-full max-w-lg rounded-xl border border-outline-variant/20 bg-surface-container-lowest shadow-[0_16px_36px_-24px_rgba(21,53,102,0.18)] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-5 py-4 border-b border-outline-variant/15 bg-surface-container-low/40 flex items-start gap-3">
@@ -759,7 +812,7 @@ export default function InterviewRoom() {
         )}
 
         {!hasInterviewStarted && !isInterviewClosed ? (
-          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-6 space-y-5">
+          <div className="rounded-[28px] border border-[#cddcf0] bg-white p-6 space-y-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
             <div className="space-y-2">
               <h2 className="text-lg font-semibold text-on-surface">欢迎进入 AI 面试考场</h2>
               <p className="text-sm text-on-surface-variant">
@@ -767,9 +820,9 @@ export default function InterviewRoom() {
               </p>
             </div>
 
-            <div className="inline-flex items-center rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-2">
-              <p className="text-sm text-on-surface-variant">
-                面试时长 <span className="font-semibold text-on-surface">{INTERVIEW_DURATION_MINUTES} 分钟</span>
+            <div className="inline-flex items-center rounded-[16px] border border-[#d6e2f1] bg-[#f7fbff] px-3 py-2">
+              <p className="text-sm text-[#5d7896]">
+                面试时长 <span className="font-semibold text-[#16355f]">{interviewDurationMinutes} 分钟</span>
               </p>
             </div>
 
@@ -791,14 +844,19 @@ export default function InterviewRoom() {
             </div>
           </div>
         ) : (
-          <div className="grid lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-on-surface">对话记录</h2>
-                <span className="text-xs text-on-surface-variant">已提问 {askedCount} · 已完成 {answeredCount}</span>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_360px]">
+            <div className="rounded-[28px] border border-[#cddcf0] bg-white p-4 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-[#16355f]">对话记录</h2>
+                  <p className="text-xs text-[#6b86a4]">题量、进度和侧栏操作均按同一统计口径展示</p>
+                </div>
+                <span className="inline-flex items-center rounded-full border border-[#d6e2f1] bg-[#f7fbff] px-3 py-1 text-xs font-medium text-[#4b6b90]">
+                  已提问 {askedCount} · 已完成 {answeredCount} · 总题目 {progressTotal || '-'}
+                </span>
               </div>
 
-              <div className="h-[360px] overflow-y-auto rounded-lg border border-outline-variant/20 bg-surface-container-low p-3 space-y-2">
+              <div className="h-[min(68vh,620px)] overflow-y-auto rounded-[20px] border border-[#d6e2f1] bg-[#f8fbff] p-4 pr-3 space-y-3">
                 {messages.length === 0 ? (
                   <p className="text-xs text-on-surface-variant">
                     {busyAction === 'start' ? '正在生成第 1 题，请稍候...' : '暂未收到题目，请稍候。'}
@@ -826,14 +884,14 @@ export default function InterviewRoom() {
                       return (
                         <div key={`room-msg-${idx}`} className={`flex ${isCandidate ? 'justify-end' : 'justify-start'}`}>
                           <div
-                            className={`max-w-[92%] md:max-w-[86%] rounded-md border px-3 py-2 text-sm ${
+                            className={`max-w-[min(88%,42rem)] rounded-2xl border px-4 py-3 text-sm shadow-sm ${
                               isCandidate
                                 ? 'bg-primary/10 border-primary/20 text-primary'
                                 : 'bg-surface-container-high border-outline-variant/20 text-on-surface'
                             }`}
                           >
                             <p className="font-semibold mb-1">{isCandidate ? '候选人' : 'AI 面试官'}</p>
-                            <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-relaxed">{msg.content}</p>
                           </div>
                         </div>
                       );
@@ -864,8 +922,16 @@ export default function InterviewRoom() {
                     }
                   }}
                   rows={1}
-                  placeholder={answerLocked ? '已提交，无法继续作答' : '输入你的回答，Enter 发送，Shift+Enter 换行'}
-                  className="flex-1 min-h-[42px] max-h-[180px] resize-none overflow-y-auto rounded-md border border-outline-variant/25 bg-surface-container-lowest px-3 py-2 text-sm leading-6 outline-none focus:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  placeholder={
+                    isInterviewClosed
+                      ? '已提交，无法继续作答'
+                      : isOvertime
+                        ? '已超时，当前考场已锁定作答，仅可提交'
+                        : allQuestionsAnswered
+                          ? '题目已全部完成，请直接提交'
+                          : '输入你的回答，Enter 发送，Shift+Enter 换行'
+                  }
+                  className="flex-1 min-h-[42px] max-h-[180px] resize-none overflow-y-auto rounded-xl border border-[#d6e2f1] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={() => void handleSubmitTurn()}
@@ -875,17 +941,21 @@ export default function InterviewRoom() {
                   <Send className="w-4 h-4" /> {busyAction === 'turn' ? '发送中...' : '发送回答'}
                 </button>
               </div>
+              <p className="mt-2 text-xs text-[#6b86a4]">{submissionRuleLabel}</p>
             </div>
 
-            <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-4 space-y-3 h-fit">
-              <h2 className="text-sm font-semibold text-on-surface">操作</h2>
+            <div className="rounded-[28px] border border-[#cddcf0] bg-white p-4 space-y-4 h-fit shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)] xl:sticky xl:top-6">
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-[#16355f]">操作</h2>
+                <p className="text-xs text-[#6b86a4]">超时后不会自动提交，需手动确认提交并生成评分报告。</p>
+              </div>
 
-              <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-2">
-                <p className="text-[11px] text-on-surface-variant flex items-center gap-1.5">
+              <div className={`rounded-[20px] border px-4 py-3 ${isOvertime ? 'border-[#efc1c8] bg-[#fff4f6]' : 'border-[#d6e2f1] bg-[#f7fbff]'}`}>
+                <p className="text-[11px] text-[#6b86a4] flex items-center gap-1.5">
                   <Timer className="w-3.5 h-3.5" /> {timerView.title}
                 </p>
-                <p className="text-xl font-semibold text-on-surface leading-tight">{timerView.value}</p>
-                <p className="text-[11px] text-on-surface-variant">{timerView.hint}</p>
+                <p className={`text-2xl font-semibold leading-tight ${isOvertime ? 'text-[#c43d4b]' : 'text-[#16355f]'}`}>{timerView.value}</p>
+                <p className="text-[11px] text-[#6b86a4]">{timerView.hint}</p>
               </div>
 
               <button
@@ -897,23 +967,23 @@ export default function InterviewRoom() {
                 {busyAction === 'finish' ? '提交中...' : '提交'}
               </button>
 
-              <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-3 space-y-2">
-                <p className="text-xs font-semibold text-on-surface">本场进度</p>
+              <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-3 py-3 space-y-2">
+                <p className="text-xs font-semibold text-[#16355f]">本场进度</p>
                 <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="rounded-md bg-surface-container-lowest border border-outline-variant/15 px-2 py-1.5">
-                    <p className="text-[10px] text-on-surface-variant">总题目</p>
-                    <p className="text-sm font-semibold text-on-surface">{progressTotal || '-'}</p>
+                  <div className="rounded-md bg-white border border-[#d6e2f1] px-2 py-1.5">
+                    <p className="text-[10px] text-[#6b86a4]">总题目</p>
+                    <p className="text-sm font-semibold text-[#16355f]">{progressTotal || '-'}</p>
                   </div>
-                  <div className="rounded-md bg-surface-container-lowest border border-outline-variant/15 px-2 py-1.5">
-                    <p className="text-[10px] text-on-surface-variant">已完成</p>
-                    <p className="text-sm font-semibold text-on-surface">{answeredCount}</p>
+                  <div className="rounded-md bg-white border border-[#d6e2f1] px-2 py-1.5">
+                    <p className="text-[10px] text-[#6b86a4]">已完成</p>
+                    <p className="text-sm font-semibold text-[#16355f]">{answeredCount}</p>
                   </div>
-                  <div className="rounded-md bg-surface-container-lowest border border-outline-variant/15 px-2 py-1.5">
-                    <p className="text-[10px] text-on-surface-variant">完成率</p>
-                    <p className="text-sm font-semibold text-on-surface">{completionRate}%</p>
+                  <div className="rounded-md bg-white border border-[#d6e2f1] px-2 py-1.5">
+                    <p className="text-[10px] text-[#6b86a4]">完成率</p>
+                    <p className="text-sm font-semibold text-[#16355f]">{completionRate}%</p>
                   </div>
                 </div>
-                <div className="h-1.5 rounded-full bg-surface-container-high overflow-hidden">
+                <div className="h-1.5 rounded-full bg-white overflow-hidden">
                   <div
                     className="h-full rounded-full bg-primary transition-all"
                     style={{ width: `${completionRate}%` }}
@@ -921,16 +991,24 @@ export default function InterviewRoom() {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-2.5 space-y-1">
+              <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-3 py-3 space-y-2">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-on-surface-variant">当前状态</span>
-                  <span className="font-semibold text-on-surface">{toStatusLabel(interview.status)}</span>
+                  <span className="text-[#6b86a4]">当前状态</span>
+                  <span className="font-semibold text-[#16355f]">{roomStateLabel}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-on-surface-variant">作答状态</span>
+                  <span className="text-[#6b86a4]">作答状态</span>
                   <span className={`font-semibold ${answerLocked ? 'text-error' : 'text-primary'}`}>
                     {answerLocked ? '已锁定' : '可继续作答'}
                   </span>
+                </div>
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <span className="text-[#6b86a4]">提交规则</span>
+                  <span className="text-right font-medium text-[#16355f]">{submissionRuleLabel}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <span className="text-[#6b86a4]">保存状态</span>
+                  <span className="text-right font-medium text-[#16355f]">{saveStatusLabel}</span>
                 </div>
               </div>
             </div>
@@ -938,7 +1016,7 @@ export default function InterviewRoom() {
         )}
 
         {report && (
-          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-4 space-y-3">
+          <div className="rounded-[28px] border border-[#cddcf0] bg-white p-4 space-y-3 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
             <div className="flex items-center gap-4 flex-wrap">
               <div>
                 <p className="text-xs text-on-surface-variant">总分</p>

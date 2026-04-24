@@ -154,6 +154,7 @@ export interface PrepareInterviewPayload {
   candidateId: string;
   positionId: string;
   mode?: InterviewSessionMode;
+  questionCount?: number;
 }
 
 export interface StartInterviewPayload {

@@ -1,0 +1,28 @@
+[
+  {
+    "source": "sample-json",
+    "source_job_title": "Computer Vision Algorithm Engineer",
+    "source_city": "Beijing",
+    "source_salary_text": "25k-45k/month",
+    "salary_min": 25000,
+    "salary_max": 45000,
+    "salary_period": "monthly",
+    "experience_text": "3-5 years",
+    "education_text": "Bachelor",
+    "company_name": "Atlas Vision",
+    "captured_at": "2026-04-18T08:00:00Z"
+  },
+  {
+    "source": "sample-json",
+    "source_job_title": "Backend Engineer",
+    "source_city": "Shanghai",
+    "source_salary_text": "30k-50k/month",
+    "salary_min": 30000,
+    "salary_max": 50000,
+    "salary_period": "monthly",
+    "experience_text": "5-8 years",
+    "education_text": "Bachelor",
+    "company_name": "Northwind",
+    "captured_at": "2026-04-18T09:00:00Z"
+  }
+]

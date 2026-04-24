@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { FileCode2, Shield, ShieldAlert, ClipboardCheck } from 'lucide-react';
+import { ClipboardCheck, FileCode2, Shield, ShieldAlert } from 'lucide-react';
 import { useSettingsCenterContext } from './context';
 
 type RuleItem = {
@@ -12,20 +12,20 @@ type RuleItem = {
 const RULES: RuleItem[] = [
   {
     field: 'ai_screening_enabled',
-    title: 'GitHub 开源项目纳入评分',
-    desc: '候选人有公开仓库时，系统将仓库信息纳入筛选参考。',
+    title: '纳入公开代码信息',
+    desc: '候选人存在公开仓库时，将仓库信息纳入筛选参考，用于补充技术判断。',
     icon: FileCode2,
   },
   {
     field: 'resume_privacy',
-    title: '候选人联系方式脱敏',
-    desc: '在进入约面阶段前，手机号与邮箱默认不可见。',
+    title: '联系方式默认脱敏',
+    desc: '在进入约面或发起联系前，手机号和邮箱默认不对普通成员展示。',
     icon: ShieldAlert,
   },
   {
     field: 'mandatory_feedback',
-    title: '面试反馈结构化必填',
-    desc: '面试官提交评价时，必须填写结构化复盘项。',
+    title: '面试反馈必须结构化',
+    desc: '面试官提交评价时，必须填写结构化结论与复盘信息，避免只留口头判断。',
     icon: ClipboardCheck,
   },
 ];
@@ -34,91 +34,90 @@ export default function OrganizationSettings() {
   const { settings, loading, syncError, updateSetting } = useSettingsCenterContext();
 
   if (loading) {
-    return <div className="p-12 text-center text-on-surface-variant animate-pulse">正在同步组织配置...</div>;
+    return <div className="p-8 text-center text-slate-500 animate-pulse">正在同步组织规则...</div>;
   }
 
   const enabledCount = RULES.filter((rule) => settings?.[rule.field] === true).length;
 
   return (
-    <section className="relative overflow-hidden rounded-xl border border-outline-variant/20 bg-surface-container-lowest p-6 shadow-sm">
-      <div className="absolute -right-12 -top-12 h-32 w-32 rounded-full bg-primary/10 blur-2xl pointer-events-none" />
-      <div className="relative space-y-5">
-        <h3 className="text-base font-medium text-on-surface flex items-center gap-2 border-b border-outline-variant/10 pb-4">
-          <Shield className="w-5 h-5 text-primary" /> 组织规则
-        </h3>
+    <div className="space-y-5">
+      <h3 className="flex items-center gap-2 border-b border-[#e8eff7] pb-4 text-base font-semibold text-[#16355f]">
+        <Shield className="h-5 w-5 text-[#1f5fbf]" />
+        组织规则
+      </h3>
 
-        <div className="rounded-lg border border-primary/20 bg-primary/6 px-4 py-3 flex items-center justify-between">
-          <p className="text-xs text-on-surface-variant">当前启用规则</p>
-          <p className="text-sm font-semibold text-primary">
-            {enabledCount} / {RULES.length}
-          </p>
-        </div>
-
-        {syncError && (
-          <div className="rounded-lg border border-error/20 bg-error/8 px-4 py-3 text-sm text-error">
-            设置同步失败：{syncError}
-          </div>
-        )}
-
-        <div className="space-y-3">
-          {RULES.map((rule) => {
-            const isOn = settings?.[rule.field] === true;
-            const Icon = rule.icon;
-            return (
-              <article
-                key={rule.field}
-                className={`rounded-lg border p-4 transition-colors ${
-                  isOn
-                    ? 'border-primary/25 bg-primary/5'
-                    : 'border-outline-variant/15 bg-surface hover:border-primary/30'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={`h-9 w-9 rounded-lg flex items-center justify-center ${
-                        isOn ? 'bg-primary/15 text-primary' : 'bg-surface-container text-on-surface-variant'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-medium text-on-surface">{rule.title}</h4>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                            isOn
-                              ? 'border-primary/20 text-primary bg-primary/8'
-                              : 'border-outline-variant/20 text-on-surface-variant bg-surface-container-low'
-                          }`}
-                        >
-                          {isOn ? '已启用' : '未启用'}
-                        </span>
-                      </div>
-                      <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">{rule.desc}</p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => updateSetting(rule.field, !isOn)}
-                    className={`w-11 h-6 rounded-full relative cursor-pointer border transition-colors flex items-center shrink-0 ${
-                      isOn ? 'bg-primary border-primary' : 'bg-surface-container-high border-outline-variant/20'
-                    }`}
-                    aria-pressed={isOn}
-                    aria-label={rule.title}
-                  >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${
-                        isOn ? 'translate-x-[24px]' : 'translate-x-[4px] bg-on-surface-variant'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+      <div className="flex items-center justify-between rounded-[18px] border border-[#d9e5f2] bg-[#fbfdff] px-4 py-3">
+        <p className="text-xs text-[#6b86a4]">当前已启用规则</p>
+        <p className="text-sm font-semibold text-[#1f5fbf]">
+          {enabledCount} / {RULES.length}
+        </p>
       </div>
-    </section>
+
+      {syncError ? (
+        <div className="rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+          设置同步失败：{syncError}
+        </div>
+      ) : null}
+
+      <div className="space-y-3">
+        {RULES.map((rule) => {
+          const isOn = settings?.[rule.field] === true;
+          const Icon = rule.icon;
+
+          return (
+            <article
+              key={rule.field}
+              className={`rounded-[20px] border p-4 transition-colors ${
+                isOn ? 'border-[#bfd5f5] bg-[#f7fbff]' : 'border-[#e2ebf6] bg-white hover:border-[#c9d9eb]'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`flex h-10 w-10 items-center justify-center rounded-[14px] ${
+                      isOn ? 'bg-[#eaf3ff] text-[#1f5fbf]' : 'bg-[#f5f8fc] text-[#6b86a4]'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-[#16355f]">{rule.title}</h4>
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                          isOn
+                            ? 'border-[#bfd5f5] bg-[#f0f7ff] text-[#1f5fbf]'
+                            : 'border-[#e2ebf6] bg-[#fbfdff] text-[#6b86a4]'
+                        }`}
+                      >
+                        {isOn ? '已启用' : '未启用'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-[#6b86a4]">{rule.desc}</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => updateSetting(rule.field, !isOn)}
+                  className={`relative flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors ${
+                    isOn ? 'border-[#1f5fbf] bg-[#1f5fbf]' : 'border-[#d5dfeb] bg-[#eef3f8]'
+                  }`}
+                  aria-pressed={isOn}
+                  aria-label={rule.title}
+                >
+                  <span
+                    className={`h-4 w-4 rounded-full shadow-sm transition-transform duration-300 ${
+                      isOn ? 'translate-x-[24px] bg-white' : 'translate-x-[4px] bg-[#6b86a4]'
+                    }`}
+                  />
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
   );
 }

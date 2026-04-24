@@ -291,8 +291,43 @@ export default function AdminManagement() {
   const hasOwner = users.some((u) => u.role === 'owner');
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-12">
-      <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
+    <div className="space-y-6 animate-in fade-in duration-500 pb-12">
+      <section className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+        <div className="grid gap-4 px-6 py-5 lg:grid-cols-[1.35fr_0.85fr] lg:px-8">
+          <div className="space-y-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-[11px] font-semibold tracking-[0.24em] text-[#426a9a]">
+              <Shield className="h-3.5 w-3.5" />
+              权限治理
+            </div>
+            <div>
+              <h2 className="text-3xl font-semibold tracking-tight text-[#16355f]">管理员权限中心</h2>
+              <p className="mt-1 text-sm text-[#5d7896]">管理角色层级、权限分配与高权限账号操作，避免权限漂移和职责重叠。</p>
+            </div>
+          </div>
+
+          <div className="rounded-[24px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b86a4]" />
+                <input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="搜索用户名 / 邮箱 / 编号 / 角色"
+                  className="w-full bg-white border border-[#c7daf6] rounded-xl pl-9 pr-3 py-2 text-sm outline-none focus:border-primary transition-colors"
+                />
+              </div>
+              <button
+                onClick={fetchUsers}
+                className="p-2.5 rounded-xl border border-[#c7daf6] bg-white hover:bg-[#eef5ff] transition-colors text-[#355b87]"
+                title="刷新"
+              >
+                <RefreshCcw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <div className="hidden">
         <div>
           <div className="flex items-center gap-3 mb-2">
             <h2 className="text-2xl font-medium text-on-surface">管理员权限中心</h2>
@@ -328,17 +363,17 @@ export default function AdminManagement() {
         </div>
       )}
 
-      <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-3xl overflow-hidden shadow-sm">
+      <div className="bg-white border border-[#cddcf0] rounded-[28px] overflow-hidden shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="bg-surface-container-low border-b border-outline-variant/10">
-              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-on-surface-variant">用户</th>
-              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-on-surface-variant">角色</th>
-              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-on-surface-variant">权限</th>
-              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-on-surface-variant text-right">操作</th>
+            <tr className="bg-[#f7fbff] border-b border-[#e4edf8]">
+              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-[#6b86a4]">用户</th>
+              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-[#6b86a4]">角色</th>
+              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-[#6b86a4]">权限</th>
+              <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-[#6b86a4] text-right">操作</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-outline-variant/10">
+          <tbody className="divide-y divide-[#e4edf8]">
             {!loading && displayedUsers.length === 0 && (
               <tr>
                 <td colSpan={4} className="px-6 py-10 text-center text-on-surface-variant text-sm">
@@ -352,7 +387,7 @@ export default function AdminManagement() {
               const canEditPermissions = u.role === 'admin';
 
               return (
-                <tr key={u.id} className="hover:bg-surface-container/30 transition-colors align-top">
+                <tr key={u.id} className="hover:bg-[#fbfdff] transition-colors align-top">
                   <td className="px-6 py-6">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center border border-outline-variant/20">

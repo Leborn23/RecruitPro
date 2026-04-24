@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
-import { Search, Filter, Star, X, Send, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Filter, Loader2, Search, Send, Trash2, UserRound, Users, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import InterviewInviteModal from '../components/interviews/InterviewInviteModal';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 
 type CandidateListRow = {
   id: string;
@@ -15,11 +15,60 @@ type CandidateListRow = {
   edu: string | null;
   age: number | null;
   match: number | null;
+  city: string | null;
+};
+
+type AdvancedFilters = {
+  minMatch: string;
+  minExpYears: string;
+  education: string;
+  cityKeyword: string;
+};
+
+type ChatMessage = {
+  id: number;
+  text: string;
+  recalled: boolean;
 };
 
 const PAGE_SIZE = 20;
 
+const DEFAULT_FILTERS: AdvancedFilters = {
+  minMatch: 'all',
+  minExpYears: 'all',
+  education: 'all',
+  cityKeyword: '',
+};
+
+const EDUCATION_OPTIONS = ['大专', '本科', '硕士', '博士'];
+
+const countActiveFilters = (filters: AdvancedFilters) =>
+  Number(filters.minMatch !== 'all') +
+  Number(filters.minExpYears !== 'all') +
+  Number(filters.education !== 'all') +
+  Number(filters.cityKeyword.trim() !== '');
+
+const matchTone = (score: number) => {
+  if (score >= 90) return 'border-[#d7efe4] bg-[#f6fffb] text-[#1f6b49]';
+  if (score >= 75) return 'border-[#d7e5f7] bg-[#f7fbff] text-[#1f5fbf]';
+  return 'border-[#dde8f5] bg-white text-[#5d7896]';
+};
+
+const buildCandidateSummary = (candidate: CandidateListRow) => {
+  const parts = [
+    `${candidate.exp_years ?? '-'} 年经验`,
+    candidate.edu_level || candidate.edu || '学历未知',
+    `${candidate.age ?? '-'} 岁`,
+  ];
+  if (candidate.city?.trim()) parts.push(candidate.city.trim());
+  return parts.join(' · ');
+};
+
 export default function Candidates() {
+  const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const canDeleteCandidate = hasPermission('SCREEN_RESUMES');
+
   const [candidates, setCandidates] = useState<CandidateListRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [queryTerm, setQueryTerm] = useState('');
@@ -33,33 +82,55 @@ export default function Candidates() {
   const [chatCandidate, setChatCandidate] = useState<CandidateListRow | null>(null);
   const [inviteCandidate, setInviteCandidate] = useState<CandidateListRow | null>(null);
   const [chatMsg, setChatMsg] = useState('');
-  const [messages, setMessages] = useState<Array<{ id: number; text: string; recalled: boolean }>>([]);
-
-  const navigate = useNavigate();
-  const { hasPermission } = useAuth();
-  const canDeleteCandidate = hasPermission('SCREEN_RESUMES');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [filters, setFilters] = useState<AdvancedFilters>(DEFAULT_FILTERS);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       setQueryTerm(searchTerm.trim());
       setPage(1);
     }, 300);
-    return () => clearTimeout(timer);
+
+    return () => window.clearTimeout(timer);
   }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filters.minMatch, filters.minExpYears, filters.education, filters.cityKeyword]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function fetchCandidates() {
       setLoading(true);
-      let query: any = supabase.from('candidates').select('*', { count: 'exact' }).order('created_at', { ascending: false });
+
+      let query = supabase.from('candidates').select('*', { count: 'exact' }).order('created_at', { ascending: false });
+
       if (queryTerm) {
         query = query.or(`name.ilike.%${queryTerm}%,title.ilike.%${queryTerm}%,exp.ilike.%${queryTerm}%`);
+      }
+
+      if (filters.minMatch !== 'all') {
+        query = query.gte('match', Number(filters.minMatch));
+      }
+
+      if (filters.minExpYears !== 'all') {
+        query = query.gte('exp_years', Number(filters.minExpYears));
+      }
+
+      if (filters.education !== 'all') {
+        query = query.ilike('edu_level', `%${filters.education}%`);
+      }
+
+      if (filters.cityKeyword.trim()) {
+        query = query.ilike('city', `%${filters.cityKeyword.trim()}%`);
       }
 
       const from = (page - 1) * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
       const { data, count, error } = await query.range(from, to);
+
       if (cancelled) return;
 
       if (error) {
@@ -75,16 +146,18 @@ export default function Candidates() {
     }
 
     void fetchCandidates();
+
     return () => {
       cancelled = true;
     };
-  }, [page, queryTerm, reloadKey]);
+  }, [filters.cityKeyword, filters.education, filters.minExpYears, filters.minMatch, page, queryTerm, reloadKey]);
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const currentPageCandidateIds = candidates.map((candidate) => candidate.id).filter(Boolean);
   const selectedOnPageCount = currentPageCandidateIds.filter((id) => selectedCandidateIds.includes(id)).length;
   const allOnPageSelected = currentPageCandidateIds.length > 0 && selectedOnPageCount === currentPageCandidateIds.length;
   const selectedCount = selectedCandidateIds.length;
+  const activeFilterCount = countActiveFilters(filters);
 
   useEffect(() => {
     if (page > totalPages) {
@@ -94,9 +167,17 @@ export default function Candidates() {
 
   useEffect(() => {
     setSelectedCandidateIds([]);
-  }, [queryTerm]);
+  }, [queryTerm, filters.cityKeyword, filters.education, filters.minExpYears, filters.minMatch]);
 
   const refreshCandidates = () => setReloadKey((prev) => prev + 1);
+
+  const heroStats = useMemo(() => {
+    const highMatchCount = candidates.filter((item) => (item.match ?? 0) >= 85).length;
+    return {
+      highMatchCount,
+      selectedCount,
+    };
+  }, [candidates, selectedCount]);
 
   const toggleCandidateSelection = (candidateId: string) => {
     setSelectedCandidateIds((prev) =>
@@ -109,12 +190,13 @@ export default function Candidates() {
       if (allOnPageSelected) {
         return prev.filter((id) => !currentPageCandidateIds.includes(id));
       }
-      const merged = new Set([...prev, ...currentPageCandidateIds]);
-      return Array.from(merged);
+      return Array.from(new Set([...prev, ...currentPageCandidateIds]));
     });
   };
 
   const clearSelection = () => setSelectedCandidateIds([]);
+
+  const clearFilters = () => setFilters(DEFAULT_FILTERS);
 
   const deleteCandidatesByIds = async (candidateIds: string[]) => {
     if (!canDeleteCandidate || candidateIds.length === 0 || batchDeleting) return false;
@@ -122,6 +204,7 @@ export default function Candidates() {
     setBatchDeleting(true);
     const { error } = await supabase.from('candidates').delete().in('id', candidateIds);
     setBatchDeleting(false);
+
     if (error) {
       window.alert(`删除失败：${error.message}`);
       return false;
@@ -129,20 +212,33 @@ export default function Candidates() {
 
     const deletedSet = new Set(candidateIds);
     setSelectedCandidateIds((prev) => prev.filter((id) => !deletedSet.has(id)));
+
     if (chatCandidate?.id && deletedSet.has(chatCandidate.id)) setChatCandidate(null);
     if (inviteCandidate?.id && deletedSet.has(inviteCandidate.id)) setInviteCandidate(null);
+
     refreshCandidates();
     return true;
   };
 
-  const handleSend = () => {
-    if (!chatMsg.trim()) return;
-    setMessages((prev) => [...prev, { id: Date.now(), text: chatMsg, recalled: false }]);
-    setChatMsg('');
+  const handleDeleteCandidate = async (candidate: CandidateListRow) => {
+    if (!canDeleteCandidate || !candidate.id) return;
+
+    const name = candidate.name || '该候选人';
+    const confirmed = window.confirm(`确认删除候选人「${name}」吗？删除后不可恢复。`);
+    if (!confirmed) return;
+
+    setDeletingCandidateId(candidate.id);
+    await deleteCandidatesByIds([candidate.id]);
+    setDeletingCandidateId(null);
   };
 
-  const handleRecall = (id: number) => {
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, recalled: true } : m)));
+  const handleBatchDelete = async () => {
+    if (!canDeleteCandidate || selectedCount === 0) return;
+
+    const confirmed = window.confirm(`确认删除已选中的 ${selectedCount} 位候选人吗？删除后不可恢复。`);
+    if (!confirmed) return;
+
+    await deleteCandidatesByIds(selectedCandidateIds);
   };
 
   const openChat = (candidate: CandidateListRow) => {
@@ -150,286 +246,425 @@ export default function Candidates() {
     setMessages([]);
   };
 
-  const handleDeleteCandidate = async (candidate: CandidateListRow) => {
-    if (!canDeleteCandidate || !candidate.id) return;
-    const name = candidate.name || '该候选人';
-    const confirmed = window.confirm(`确认删除候选人「${name}」吗？删除后不可恢复。`);
-    if (!confirmed) return;
+  const handleSend = () => {
+    if (!chatMsg.trim()) return;
 
-    setDeletingCandidateId(candidate.id);
-    const success = await deleteCandidatesByIds([candidate.id]);
-    setDeletingCandidateId(null);
-    if (!success) return;
+    setMessages((prev) => [...prev, { id: Date.now(), text: chatMsg.trim(), recalled: false }]);
+    setChatMsg('');
   };
 
-  const handleBatchDelete = async () => {
-    if (!canDeleteCandidate || selectedCount === 0) return;
-    const confirmed = window.confirm(`确认删除已选中的 ${selectedCount} 位候选人吗？删除后不可恢复。`);
-    if (!confirmed) return;
-    await deleteCandidatesByIds(selectedCandidateIds);
+  const handleRecall = (id: number) => {
+    setMessages((prev) => prev.map((message) => (message.id === id ? { ...message, recalled: true } : message)));
   };
 
   return (
-    <div className="relative space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
-        <h2 className="text-2xl font-medium text-on-surface">
-          全部候选人
-          <span className="ml-2 text-base text-on-surface-variant">{totalCount} 位</span>
-        </h2>
-        <div className="flex w-full items-center gap-3 md:w-auto">
-          <div className="relative flex-1 md:w-64">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline-variant" />
-            <input
-              type="text"
-              placeholder="搜索姓名、岗位或经验..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full rounded-md border border-outline-variant/30 bg-surface-container-lowest py-2 pl-9 pr-4 text-sm transition-colors focus:border-primary focus:outline-none"
-            />
-          </div>
-          <button
-            onClick={() => alert('高级筛选功能待接入')}
-            className="cursor-pointer rounded-md border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-low"
-          >
-            <span className="inline-flex items-center gap-2">
-              <Filter className="h-4 w-4" />
-              筛选
-            </span>
-          </button>
-        </div>
-      </div>
-
-      <section className="flex items-start gap-4 rounded-xl border border-primary/20 bg-primary-container/20 p-5">
-        <Star className="mt-1 h-5 w-5 fill-primary text-primary" />
-        <div>
-          <h3 className="mb-1 text-sm font-medium text-on-surface">智能推荐</h3>
-          <p className="text-sm text-on-surface-variant">根据岗位要求和简历解析结果，系统自动突出高匹配候选人。</p>
-        </div>
-      </section>
-
-      {canDeleteCandidate && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-outline-variant/20 bg-surface-container-low p-3 text-xs text-on-surface-variant">
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md bg-surface-container px-2.5 py-1.5">
-            <input
-              type="checkbox"
-              checked={allOnPageSelected}
-              onChange={() => toggleSelectCurrentPage()}
-              disabled={loading || batchDeleting || currentPageCandidateIds.length === 0}
-              className="h-3.5 w-3.5 rounded border-outline-variant/30 text-primary focus:ring-primary/20"
-            />
-            全选本页
-          </label>
-          <span>已选 {selectedCount} 位</span>
-          <button
-            type="button"
-            onClick={clearSelection}
-            disabled={selectedCount === 0 || batchDeleting}
-            className="rounded-md border border-outline-variant/25 bg-surface-container px-2.5 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            清空选择
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleBatchDelete()}
-            disabled={selectedCount === 0 || batchDeleting}
-            className="inline-flex items-center gap-1.5 rounded-md border border-error/25 bg-error/10 px-2.5 py-1.5 font-medium text-error disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {batchDeleting ? '删除中...' : `删除选中（${selectedCount}）`}
-          </button>
-        </div>
-      )}
-
-      <div className="overflow-hidden rounded-xl border border-outline-variant/15 bg-surface-container-lowest shadow-[0_4px_16px_-4px_rgba(41,52,58,0.02)]">
-        <div className="divide-y divide-outline-variant/15">
-          {candidates.map((candidate) => (
-            <div
-              key={candidate.id}
-              onClick={() => navigate(`/candidates/${candidate.id}`)}
-              className="group flex cursor-pointer items-center justify-between p-5 transition-colors hover:bg-surface-container-low"
-            >
-              <div className="flex items-center gap-5">
-                <input
-                  type="checkbox"
-                  checked={selectedCandidateIds.includes(candidate.id)}
-                  onChange={() => toggleCandidateSelection(candidate.id)}
-                  onClick={(e) => e.stopPropagation()}
-                  disabled={batchDeleting || deletingCandidateId === candidate.id}
-                  className="h-4 w-4 cursor-pointer rounded border-outline-variant/30 text-primary focus:ring-primary/20"
-                />
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-container text-lg font-medium text-on-surface">
-                  {(candidate.name || '?').charAt(0)}
-                </div>
-                <div>
-                  <div className="mb-1 flex items-center gap-3">
-                    <h4 className="text-base font-medium text-on-surface transition-colors group-hover:text-primary">
-                      {candidate.name || '未命名候选人'}
-                    </h4>
-                    <span
-                      className={`rounded-full border border-outline-variant/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                        (candidate.match ?? 0) >= 90
-                          ? 'bg-primary-container/80 text-primary'
-                          : 'bg-surface-container text-on-surface-variant'
-                      }`}
-                    >
-                      匹配度 {candidate.match ?? 0}%
-                    </span>
-                  </div>
-                  <p className="text-sm text-on-surface-variant">
-                    <span className="font-medium text-on-surface">{candidate.title || '未识别职位'}</span>
-                    <span className="mx-1.5 opacity-50">·</span>
-                    {candidate.exp_years ?? '-'} 年经验
-                  </p>
-                  <p className="mt-1.5 flex items-center gap-2 text-xs text-outline-variant">
-                    <span className="rounded bg-surface-container px-2 py-0.5">{candidate.edu_level || candidate.edu || '学历未知'}</span>
-                    <span className="rounded bg-surface-container px-2 py-0.5">{candidate.age ?? '-'} 岁</span>
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setInviteCandidate(candidate);
-                  }}
-                  className="cursor-pointer rounded-md bg-primary-container/20 px-4 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary-container/40"
-                >
-                  邀约面试
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openChat(candidate);
-                  }}
-                  className="cursor-pointer rounded-md bg-surface-container px-4 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high"
-                >
-                  发消息
-                </button>
-                {canDeleteCandidate && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleDeleteCandidate(candidate);
-                    }}
-                    disabled={batchDeleting || deletingCandidateId === candidate.id}
-                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-error/25 bg-error/10 px-2.5 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    {deletingCandidateId === candidate.id ? '删除中...' : '删除'}
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-
-          {!loading && candidates.length === 0 && <div className="p-12 text-center text-on-surface-variant">未找到符合条件的候选人。</div>}
-          {loading && <div className="p-12 text-center text-on-surface-variant">加载候选人中...</div>}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between text-xs text-on-surface-variant">
-        <span>
-          第 {page} / {totalPages} 页 · 共 {totalCount} 位
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-            disabled={loading || page <= 1}
-            className="rounded border border-outline-variant/25 bg-surface-container-low px-2.5 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            上一页
-          </button>
-          <button
-            type="button"
-            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-            disabled={loading || page >= totalPages}
-            className="rounded border border-outline-variant/25 bg-surface-container-low px-2.5 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            下一页
-          </button>
-        </div>
-      </div>
-
-      {chatCandidate && (
-        <div className="fixed inset-y-0 right-0 z-50 flex w-80 flex-col border-l border-outline-variant/20 bg-surface-container-lowest shadow-2xl animate-in slide-in-from-right duration-300 md:w-96">
-          <div className="flex items-center justify-between border-b border-outline-variant/15 bg-surface-container-low/50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-container text-sm font-bold text-primary">
-                {(chatCandidate.name || '?').charAt(0)}
+    <div className="min-h-full bg-[#f5f9ff]">
+      <div className="space-y-4 pb-12 animate-in fade-in duration-500">
+        <section className="overflow-hidden rounded-[28px] border border-[#d9e5f2] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+          <div className="grid gap-4 px-6 py-5 lg:grid-cols-[1.35fr_0.85fr] lg:px-8">
+            <div className="space-y-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-[#bfd5f5] bg-[#f7fbff] px-3 py-1 text-[11px] font-semibold tracking-[0.18em] text-[#426a9a]">
+                <Users className="h-3.5 w-3.5" />
+                候选人中心
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-on-surface">{chatCandidate.name || '未命名候选人'}</h3>
-                <p className="flex items-center gap-1 text-[10px] text-on-surface-variant">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
-                  在线
-                </p>
+                <h1 className="text-3xl font-semibold tracking-tight text-[#16355f]">候选人管理</h1>
+                <p className="mt-2 text-sm text-[#5d7896]">统一查看候选人池和当前处理状态，再进入列表完成筛选与推进。</p>
               </div>
             </div>
-            <button
-              onClick={() => setChatCandidate(null)}
-              className="cursor-pointer rounded-md p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
 
-          <div className="hide-scrollbar flex flex-1 flex-col space-y-4 overflow-y-auto bg-surface-container-lowest/30 p-4">
-            <div className="mb-2 flex justify-center">
-              <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] text-on-surface-variant">今天 14:20</span>
-            </div>
-            <div className="w-fit max-w-[85%] rounded-xl rounded-tl-sm bg-surface-container-low p-3 text-sm text-on-surface shadow-sm">
-              你好！我是 {chatCandidate.name || '候选人'}，对「{chatCandidate.title || '该职位'}」很感兴趣，期待进一步沟通。
-            </div>
-
-            {messages.map((m) =>
-              m.recalled ? (
-                <div key={m.id} className="mb-2 flex justify-center">
-                  <span className="rounded-full bg-surface-container/50 px-2 py-0.5 text-[10px] text-on-surface-variant">你撤回了一条消息</span>
+            <div className="rounded-[24px] border border-[#d9e5f2] bg-[#fbfdff] p-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-[18px] border border-[#d8e4f4] bg-white p-3">
+                  <p className="text-[11px] font-semibold tracking-[0.12em] text-[#6b86a4]">候选人总数</p>
+                  <p className="mt-2 text-2xl font-semibold text-[#16355f]">{totalCount}</p>
                 </div>
-              ) : (
-                <div key={m.id} className="group relative mt-2 flex w-full items-center justify-end gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="rounded-[18px] border border-[#d7efe4] bg-[#f6fffb] p-3">
+                  <p className="text-[11px] font-semibold tracking-[0.12em] text-[#4f856d]">高匹配候选人</p>
+                  <p className="mt-2 text-2xl font-semibold text-[#1f6b49]">{heroStats.highMatchCount}</p>
+                </div>
+                <div className="rounded-[18px] border border-[#f0e2c9] bg-[#fffaf1] p-3">
+                  <p className="text-[11px] font-semibold tracking-[0.12em] text-[#9b7a45]">已选中</p>
+                  <p className="mt-2 text-2xl font-semibold text-[#7b5a22]">{heroStats.selectedCount}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-[28px] border border-[#d9e5f2] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+          <div className="border-b border-[#e8eff7] px-6 py-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold text-[#16355f]">候选人列表</h2>
+                <p className="text-sm text-[#6b86a4]">搜索姓名、职位或经验，直接在列表里完成筛选和操作。</p>
+              </div>
+
+              <div className="flex w-full flex-col gap-3 sm:flex-row xl:w-auto">
+                <div className="relative min-w-0 flex-1 xl:w-80">
+                  <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#89a6c7]" />
+                  <input
+                    type="text"
+                    placeholder="搜索姓名、职位或经验..."
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    className="w-full rounded-2xl border border-[#d7e5f7] bg-[#fbfdff] py-3 pl-11 pr-4 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedFilters((prev) => !prev)}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[#d7e5f7] bg-[#f7fbff] px-4 py-3 text-sm font-medium text-[#24476b] transition hover:bg-[#edf4fd]"
+                >
+                  <Filter className="h-4 w-4" />
+                  高级筛选
+                  {activeFilterCount > 0 ? (
+                    <span className="rounded-full border border-[#bfd5f5] bg-white px-2 py-0.5 text-[11px] text-[#1f5fbf]">
+                      {activeFilterCount}
+                    </span>
+                  ) : null}
+                  <ChevronDown className={`h-4 w-4 transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {showAdvancedFilters ? (
+              <div className="mt-5 rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-4">
+                <div className="grid gap-3 lg:grid-cols-4">
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-[#6b86a4]">最低匹配度</span>
+                    <select
+                      value={filters.minMatch}
+                      onChange={(event) => setFilters((prev) => ({ ...prev, minMatch: event.target.value }))}
+                      className="w-full rounded-xl border border-[#d7e5f7] bg-white px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                    >
+                      <option value="all">不限</option>
+                      <option value="60">60 分以上</option>
+                      <option value="75">75 分以上</option>
+                      <option value="85">85 分以上</option>
+                      <option value="90">90 分以上</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-[#6b86a4]">最低经验</span>
+                    <select
+                      value={filters.minExpYears}
+                      onChange={(event) => setFilters((prev) => ({ ...prev, minExpYears: event.target.value }))}
+                      className="w-full rounded-xl border border-[#d7e5f7] bg-white px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                    >
+                      <option value="all">不限</option>
+                      <option value="1">1 年以上</option>
+                      <option value="3">3 年以上</option>
+                      <option value="5">5 年以上</option>
+                      <option value="8">8 年以上</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-[#6b86a4]">学历</span>
+                    <select
+                      value={filters.education}
+                      onChange={(event) => setFilters((prev) => ({ ...prev, education: event.target.value }))}
+                      className="w-full rounded-xl border border-[#d7e5f7] bg-white px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                    >
+                      <option value="all">不限</option>
+                      {EDUCATION_OPTIONS.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-[#6b86a4]">城市关键词</span>
+                    <input
+                      type="text"
+                      value={filters.cityKeyword}
+                      onChange={(event) => setFilters((prev) => ({ ...prev, cityKeyword: event.target.value }))}
+                      placeholder="例如：北京、上海"
+                      className="w-full rounded-xl border border-[#d7e5f7] bg-white px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-[#6b86a4]">筛选条件会实时作用到当前列表，并自动重置到第一页。</p>
                   <button
-                    onClick={() => handleRecall(m.id)}
-                    className="cursor-pointer px-2 text-[10px] text-primary opacity-0 transition-all hover:text-error group-hover:opacity-100"
+                    type="button"
+                    onClick={clearFilters}
+                    disabled={activeFilterCount === 0}
+                    className="rounded-xl border border-[#d7e5f7] bg-white px-3 py-2 text-xs font-medium text-[#355b87] transition hover:bg-[#edf4fd] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    撤回
+                    清空筛选
                   </button>
-                  <div className="relative w-fit max-w-[85%] rounded-xl rounded-tr-sm bg-primary p-3 text-sm text-white shadow-sm">{m.text}</div>
                 </div>
-              )
-            )}
+              </div>
+            ) : null}
+
+            {canDeleteCandidate ? (
+              <div className="mt-5 flex flex-wrap items-center gap-2 rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-3 text-xs text-[#5d7896]">
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-[#d7e5f7] bg-white px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    onChange={toggleSelectCurrentPage}
+                    disabled={loading || batchDeleting || currentPageCandidateIds.length === 0}
+                    className="h-3.5 w-3.5 rounded border-[#bfd4ef] text-[#1f5fbf] focus:ring-[#1f5fbf]/20"
+                  />
+                  全选本页
+                </label>
+                <span>已选 {selectedCount} 位</span>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={selectedCount === 0 || batchDeleting}
+                  className="rounded-xl border border-[#d7e5f7] bg-white px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  清空选择
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleBatchDelete()}
+                  disabled={selectedCount === 0 || batchDeleting}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#f0d5dc] bg-[#fff7f8] px-3 py-2 font-medium text-[#a2506a] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {batchDeleting ? '删除中...' : `删除选中（${selectedCount}）`}
+                </button>
+              </div>
+            ) : null}
           </div>
 
-          <div className="border-t border-outline-variant/15 bg-surface-container-lowest p-4">
-            <div className="flex gap-2">
-              <input
-                value={chatMsg}
-                onChange={(e) => setChatMsg(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="输入消息..."
-                className="flex-1 rounded-md border border-transparent bg-surface-container px-3 py-2.5 text-sm outline-none transition-all placeholder:text-outline-variant focus:border-primary"
-              />
+          {loading ? (
+            <div className="flex items-center justify-center p-16">
+              <Loader2 className="h-8 w-8 animate-spin text-[#6b86a4]" />
+            </div>
+          ) : candidates.length === 0 ? (
+            <div className="p-12">
+              <div className="rounded-[24px] border border-dashed border-[#cddcf0] bg-[#f8fbff] px-6 py-14 text-center">
+                <UserRound className="mx-auto h-9 w-9 text-[#89a6c7]" />
+                <p className="mt-4 text-base font-medium text-[#24476b]">没有找到符合条件的候选人</p>
+                <p className="mt-2 text-sm text-[#6b86a4]">你可以调整关键词或高级筛选条件，再继续筛选候选人。</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-4 p-4 sm:p-5">
+              {candidates.map((candidate) => {
+                const score = candidate.match ?? 0;
+                const deleting = deletingCandidateId === candidate.id;
+
+                return (
+                  <article
+                    key={candidate.id}
+                    onClick={() => navigate(`/candidates/${candidate.id}`)}
+                    className="group cursor-pointer rounded-[24px] border border-[#dde8f5] bg-white p-5 transition hover:border-[#c5d9ef] hover:bg-[#fcfdff]"
+                  >
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="flex items-start gap-4">
+                        {canDeleteCandidate ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedCandidateIds.includes(candidate.id)}
+                            onChange={() => toggleCandidateSelection(candidate.id)}
+                            onClick={(event) => event.stopPropagation()}
+                            disabled={batchDeleting || deleting}
+                            className="mt-3 h-4 w-4 cursor-pointer rounded border-[#bfd4ef] text-[#1f5fbf] focus:ring-[#1f5fbf]/20"
+                          />
+                        ) : null}
+
+                        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] border border-[#d6e2f1] bg-[#f4f8ff] text-lg font-semibold text-[#1f5fbf]">
+                          {(candidate.name || '?').charAt(0)}
+                        </div>
+
+                        <div className="min-w-0 space-y-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-lg font-semibold text-[#16355f] transition-colors group-hover:text-[#1f5fbf]">
+                              {candidate.name || '未命名候选人'}
+                            </h3>
+                            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${matchTone(score)}`}>
+                              匹配度 {score}%
+                            </span>
+                          </div>
+
+                          <div>
+                            <p className="text-sm font-medium text-[#24476b]">{candidate.title || '未识别职位'}</p>
+                            <p className="mt-1 text-sm text-[#5d7896]">{buildCandidateSummary(candidate)}</p>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-[#d7e5f7] bg-[#f8fbff] px-3 py-1 text-[11px] font-semibold text-[#5d7896]">
+                              候选人档案
+                            </span>
+                            <span className="rounded-full border border-[#d7e5f7] bg-white px-3 py-1 text-[11px] font-semibold text-[#5d7896]">
+                              可进入详情核查
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setInviteCandidate(candidate);
+                          }}
+                          className="rounded-xl bg-[#1f5fbf] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#194f9e]"
+                        >
+                          邀约面试
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openChat(candidate);
+                          }}
+                          className="rounded-xl border border-[#d7e5f7] bg-[#f7fbff] px-4 py-2.5 text-sm font-medium text-[#24476b] transition hover:bg-[#edf4fd]"
+                        >
+                          发消息
+                        </button>
+                        {canDeleteCandidate ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleDeleteCandidate(candidate);
+                            }}
+                            disabled={batchDeleting || deleting}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-[#f0d5dc] bg-[#fff7f8] px-3 py-2.5 text-sm font-medium text-[#a2506a] transition hover:bg-[#fff0f3] disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {deleting ? '删除中...' : '删除'}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 border-t border-[#e8eff7] px-6 py-4 text-sm text-[#5d7896] sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              当前显示 {candidates.length} / {totalCount} 位候选人
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="mr-2 text-sm font-medium text-[#5d7896]">
+                第 {page} / {totalPages} 页
+              </span>
               <button
-                onClick={handleSend}
-                disabled={!chatMsg.trim()}
-                className="flex cursor-pointer items-center justify-center rounded-md bg-primary px-3.5 py-2.5 text-white shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-50"
+                type="button"
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                disabled={loading || page <= 1}
+                className="rounded-xl border border-[#d7e5f7] bg-[#f8fbff] px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Send className="h-4 w-4" />
+                上一页
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                disabled={loading || page >= totalPages}
+                className="rounded-xl border border-[#d7e5f7] bg-[#f8fbff] px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                下一页
               </button>
             </div>
           </div>
-        </div>
-      )}
+        </section>
 
-      <InterviewInviteModal
-        open={Boolean(inviteCandidate)}
-        candidate={inviteCandidate}
-        onClose={() => setInviteCandidate(null)}
-        onSaved={() => navigate('/interviews')}
-      />
+        {chatCandidate ? (
+          <div className="fixed inset-y-0 right-0 z-50 flex w-[360px] max-w-full flex-col border-l border-[#d9e5f2] bg-white shadow-[0_24px_60px_-28px_rgba(15,23,42,0.3)] animate-in slide-in-from-right duration-300 md:w-[420px]">
+            <div className="border-b border-[#e8eff7] bg-[#fbfdff] px-5 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-[#d6e2f1] bg-white text-sm font-bold text-[#1f5fbf]">
+                    {(chatCandidate.name || '?').charAt(0)}
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-[#16355f]">{chatCandidate.name || '未命名候选人'}</h3>
+                    <p className="mt-0.5 text-xs text-[#5d7896]">{chatCandidate.title || '待沟通职位'}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setChatCandidate(null)}
+                  className="rounded-xl border border-[#d7e5f7] bg-white p-2 text-[#4a688d] transition hover:border-[#aac6ea] hover:text-[#16355f]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-1 flex-col overflow-y-auto bg-[#fbfdff] p-4">
+              <div className="mb-5 flex justify-center">
+                <span className="rounded-full border border-[#d7e5f7] bg-white px-3 py-1 text-[11px] font-medium text-[#6b86a4]">
+                  今天 14:20
+                </span>
+              </div>
+
+              <div className="w-fit max-w-[88%] rounded-[18px] rounded-tl-sm border border-[#d6e2f1] bg-white p-3 text-sm leading-6 text-[#24476b] shadow-[0_14px_28px_-24px_rgba(15,23,42,0.18)]">
+                你好，我是 {chatCandidate.name || '候选人'}，对「{chatCandidate.title || '该职位'}」很感兴趣，期待进一步沟通。
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {messages.map((message) =>
+                  message.recalled ? (
+                    <div key={message.id} className="flex justify-center">
+                      <span className="rounded-full border border-[#d7e5f7] bg-white px-3 py-1 text-[11px] text-[#6b86a4]">
+                        你撤回了一条消息
+                      </span>
+                    </div>
+                  ) : (
+                    <div key={message.id} className="group flex items-center justify-end gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      <button
+                        type="button"
+                        onClick={() => handleRecall(message.id)}
+                        className="px-2 text-[11px] text-[#355b87] opacity-0 transition group-hover:opacity-100 hover:text-[#a2506a]"
+                      >
+                        撤回
+                      </button>
+                      <div className="max-w-[88%] rounded-[18px] rounded-tr-sm bg-[#1f5fbf] px-3 py-2.5 text-sm text-white shadow-[0_16px_24px_-20px_rgba(31,95,191,0.35)]">
+                        {message.text}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+
+            <div className="border-t border-[#e8eff7] bg-white p-4">
+              <div className="flex gap-2">
+                <input
+                  value={chatMsg}
+                  onChange={(event) => setChatMsg(event.target.value)}
+                  onKeyDown={(event) => event.key === 'Enter' && handleSend()}
+                  placeholder="输入消息..."
+                  className="flex-1 rounded-2xl border border-[#d7e5f7] bg-[#fbfdff] px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
+                />
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={!chatMsg.trim()}
+                  className="flex items-center justify-center rounded-2xl bg-[#1f5fbf] px-4 py-3 text-white transition hover:bg-[#194f9e] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <InterviewInviteModal
+          open={Boolean(inviteCandidate)}
+          candidate={inviteCandidate}
+          onClose={() => setInviteCandidate(null)}
+          onSaved={() => navigate('/interviews')}
+        />
+      </div>
     </div>
   );
 }

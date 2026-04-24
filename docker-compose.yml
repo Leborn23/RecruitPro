@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env.local
+    environment:
+      FASTAPI_PORT: "8010"
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+    command: uvicorn main:app --host 0.0.0.0 --port 8010 --reload
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    env_file:
+      - .env.local
+    environment:
+      VITE_FASTAPI_PROXY_TARGET: http://backend:8010
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0

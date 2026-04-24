@@ -19,6 +19,7 @@ from models import (
     AdminPermissionsPayload,
     AdminRolePayload,
     AppendTurnPayload,
+    CandidateSalaryProfilePatchPayload,
     CompanySettingsPatchPayload,
     CreateInterviewSessionPayload,
     CreateInterviewTurnPayload,
@@ -36,6 +37,9 @@ from models import (
     PrepareInterviewPayload,
     ResolveJobRequirementPayload,
     RoomPasswordPayload,
+    SalaryMarketImportPayload,
+    SalaryMarketRawRecordPayload,
+    SalaryMarketRefreshPayload,
     ScoreInterviewPayload,
     ScreeningReviewAcknowledgePayload,
     StartInterviewPayload,
@@ -731,13 +735,19 @@ class Database:
     def __init__(self) -> None:
         self.client: Client | None = None
 
-    def get_client(self) -> Client:
-        if self.client is None:
-            self.client = create_client(
-                os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL"),
-                os.getenv("SUPABASE_SERVICE_ROLE_KEY") or env("SUPABASE_SERVICE_ROLE_KEY"),
-            )
-        return self.client
+    def get_client(self, user_token: str | None = None) -> Client:
+        base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
+        service_role_key = normalize_text(os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+        if service_role_key:
+            if self.client is None:
+                self.client = create_client(base_url, service_role_key)
+            return self.client
+
+        anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
+        client = create_client(base_url, anon_key)
+        if user_token:
+            client.postgrest.auth(user_token)
+        return client
 
     @staticmethod
     def first(response: Any) -> dict[str, Any] | None:
@@ -1071,12 +1081,17 @@ def get_auth_headers(token: str | None) -> dict[str, str]:
     return headers
 
 
-def require_user(authorization: str | None) -> dict[str, Any]:
+def get_bearer_token(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
+    return token
+
+
+def require_user(authorization: str | None) -> dict[str, Any]:
+    token = get_bearer_token(authorization)
 
     base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
     response = httpx.get(
@@ -1090,6 +1105,13 @@ def require_user(authorization: str | None) -> dict[str, Any]:
     if not isinstance(payload, dict) or not payload.get("id"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return payload
+
+
+def is_missing_table_error(error: Exception, table_names: tuple[str, ...]) -> bool:
+    message = str(error)
+    return any(table_name in message for table_name in table_names) and (
+        "Could not find the table" in message or "does not exist" in message
+    )
 
 
 def require_super_admin_user(authorization: str | None) -> dict[str, Any]:
@@ -1138,6 +1160,658 @@ def next_turn_no(session_id: str) -> int:
     )
     latest = rows[0]["turn_no"] if rows else 0
     return int(latest) + 1
+
+
+def _salary_text(value: Any) -> str:
+    return normalize_text(value).casefold()
+
+
+def _parse_salary_amount(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = _salary_text(value).replace(",", "")
+    if not text:
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([kKwW万]?)(?:\b|$)", text)
+    if not match:
+        return None
+    amount = float(match.group(1))
+    suffix = match.group(2).lower()
+    if suffix == "k":
+        amount *= 1000.0
+    elif suffix in {"w", "万"}:
+        amount *= 10000.0
+    return amount
+
+
+def _salary_period_multiplier(period: Any) -> float | None:
+    text = _salary_text(period)
+    if not text or text in {"unknown", "n/a"}:
+        return 1.0
+    if any(token in text for token in {"month", "monthly", "/mo", "/month", "mo", "月"}):
+        return 1.0
+    if any(token in text for token in {"year", "annual", "annually", "/yr", "/year", "yr", "年"}):
+        return 1.0 / 12.0
+    if any(token in text for token in {"week", "weekly", "/wk", "/week", "wk", "周"}):
+        return 52.0 / 12.0
+    if any(token in text for token in {"day", "daily", "/day", "日"}):
+        return 21.75
+    if any(token in text for token in {"hour", "hourly", "/hr", "/hour", "时"}):
+        return 21.75 * 8.0
+    return None
+
+
+def _infer_market_salary_role(title: Any) -> str:
+    text = _salary_text(title)
+    if not text:
+        return "unknown"
+    if any(token in text for token in {"computer vision", "cv algorithm", "cv engineer", "vision algorithm", "视觉算法", "计算机视觉"}):
+        return "cv_algorithm_engineer"
+    if any(token in text for token in {"recommendation algorithm", "algorithm engineer", "machine learning algorithm", "算法工程师"}):
+        return "algorithm_engineer"
+    if any(token in text for token in {"data scientist", "data science", "数据科学"}):
+        return "data_scientist"
+    if any(token in text for token in {"backend engineer", "backend developer", "server engineer", "后端工程师"}):
+        return "backend_engineer"
+    return "unknown"
+
+
+def _infer_market_salary_city(city: Any) -> str:
+    text = _salary_text(city)
+    if not text:
+        return "unknown"
+    if any(token in text for token in {"beijing", "北京", "北京"}):
+        return "beijing"
+    if any(token in text for token in {"shanghai", "上海"}):
+        return "shanghai"
+    if any(token in text for token in {"shenzhen", "深圳"}):
+        return "shenzhen"
+    if any(token in text for token in {"hangzhou", "杭州"}):
+        return "hangzhou"
+    if any(token in text for token in {"guangzhou", "广州"}):
+        return "guangzhou"
+    return "unknown"
+
+
+def _infer_market_salary_level(experience_text: Any) -> str:
+    text = _salary_text(experience_text)
+    if not text:
+        return "unknown"
+    if any(token in text for token in {"3-5", "3 to 5", "3-5 years", "3 to 5 years", "3年5年", "3年-5年"}):
+        return "mid"
+    if any(token in text for token in {"5-8", "5 to 8", "5-8 years", "5 to 8 years", "5年8年", "5年-8年"}):
+        return "senior"
+    if any(token in text for token in {"0-3", "1-3", "0 to 3", "0-3 years", "1-3 years", "0年3年", "1年3年"}):
+        return "junior"
+    if any(token in text for token in {"lead", "principal", "staff", "expert", "8+", "10+", "8 years", "10 years", "8年", "10年", "资深", "专家", "负责人"}):
+        return "lead"
+    if any(token in text for token in {"senior", "5 years", "5年", "高级"}):
+        return "senior"
+    if any(token in text for token in {"mid", "3 years", "3年", "中级"}):
+        return "mid"
+    if any(token in text for token in {"junior", "应届", "初级"}):
+        return "junior"
+    return "unknown"
+
+
+def normalize_market_salary_record(raw: dict[str, Any]) -> dict[str, Any]:
+    source_job_title = normalize_text(raw.get("source_job_title")) or normalize_text(raw.get("job_title"))
+    source_city = normalize_text(raw.get("source_city")) or normalize_text(raw.get("city"))
+    source_salary_text = normalize_text(raw.get("source_salary_text")) or normalize_text(raw.get("salary_text"))
+    salary_period = normalize_text(raw.get("salary_period")) or "monthly"
+    salary_min = _parse_salary_amount(raw.get("salary_min"))
+    salary_max = _parse_salary_amount(raw.get("salary_max"))
+
+    if salary_min is None or salary_max is None:
+        parsed_range = re.findall(r"(\d+(?:\.\d+)?)\s*([kKwW万]?)", _salary_text(source_salary_text))
+        if len(parsed_range) >= 2:
+            salary_min = _parse_salary_amount("".join(parsed_range[0])) or salary_min
+            salary_max = _parse_salary_amount("".join(parsed_range[1])) or salary_max
+
+    role_key = _infer_market_salary_role(source_job_title)
+    city_key = _infer_market_salary_city(source_city)
+    level_key = _infer_market_salary_level(raw.get("experience_text"))
+    source_key = normalize_text(raw.get("source"))
+    captured_at = normalize_text(raw.get("captured_at")) or now_iso()
+    multiplier = _salary_period_multiplier(salary_period)
+
+    if salary_min is None or salary_max is None:
+        return {
+            "source": source_key,
+            "source_job_title": source_job_title,
+            "source_city": source_city,
+            "source_salary_text": source_salary_text,
+            "normalized_role": role_key,
+            "normalized_city": city_key,
+            "normalized_level": level_key,
+            "salary_min_monthly": None,
+            "salary_median_monthly": None,
+            "salary_max_monthly": None,
+            "captured_at": captured_at,
+            "is_valid": False,
+            "invalid_reason": "missing_salary_range",
+        }
+
+    if multiplier is None:
+        return {
+            "source": source_key,
+            "source_job_title": source_job_title,
+            "source_city": source_city,
+            "source_salary_text": source_salary_text,
+            "normalized_role": role_key,
+            "normalized_city": city_key,
+            "normalized_level": level_key,
+            "salary_min_monthly": None,
+            "salary_median_monthly": None,
+            "salary_max_monthly": None,
+            "captured_at": captured_at,
+            "is_valid": False,
+            "invalid_reason": "unsupported_salary_period",
+        }
+
+    monthly_min = int(round(salary_min * multiplier))
+    monthly_max = int(round(salary_max * multiplier))
+    if monthly_max < monthly_min:
+        monthly_min, monthly_max = monthly_max, monthly_min
+    normalized_level = level_key
+    invalid_reason = None
+    if role_key == "unknown":
+        invalid_reason = "unknown_role"
+    elif city_key == "unknown":
+        invalid_reason = "unknown_city"
+    elif normalized_level == "unknown":
+        invalid_reason = "unknown_level"
+
+    return {
+        "source": source_key,
+        "source_job_title": source_job_title,
+        "source_city": source_city,
+        "source_salary_text": source_salary_text,
+        "normalized_role": role_key,
+        "normalized_city": city_key,
+        "normalized_level": normalized_level,
+        "salary_min_monthly": monthly_min,
+        "salary_median_monthly": int(round((monthly_min + monthly_max) / 2.0)),
+        "salary_max_monthly": monthly_max,
+        "captured_at": captured_at,
+        "is_valid": invalid_reason is None,
+        "invalid_reason": invalid_reason,
+    }
+
+
+def build_market_salary_benchmarks(records: list[dict[str, Any]], min_samples: int = 2) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, dict) or not record.get("is_valid"):
+            continue
+        role_key = normalize_text(record.get("normalized_role")) or "unknown"
+        city_key = normalize_text(record.get("normalized_city")) or "unknown"
+        level_key = normalize_text(record.get("normalized_level")) or "unknown"
+        if "unknown" in {role_key, city_key, level_key}:
+            continue
+        grouped.setdefault((role_key, city_key, level_key), []).append(record)
+
+    benchmarks: list[dict[str, Any]] = []
+    for (role_key, city_key, level_key), items in grouped.items():
+        if len(items) < min_samples:
+            continue
+        min_salary = int(round(sum(to_number(item.get("salary_min_monthly")) for item in items) / len(items)))
+        median_salary = int(round(sum(to_number(item.get("salary_median_monthly")) for item in items) / len(items)))
+        max_salary = int(round(sum(to_number(item.get("salary_max_monthly")) for item in items) / len(items)))
+        latest_source_at = max((normalize_text(item.get("captured_at")) for item in items), default="")
+        benchmarks.append(
+            {
+                "role_key": role_key,
+                "city_key": city_key,
+                "level_key": level_key,
+                "min_salary": min_salary,
+                "median_salary": median_salary,
+                "max_salary": max_salary,
+                "sample_size": len(items),
+                "source_count": len({normalize_text(item.get("source")) for item in items if normalize_text(item.get("source"))}),
+                "latest_source_at": latest_source_at or None,
+                "updated_at": now_iso(),
+            }
+        )
+
+    benchmarks.sort(key=lambda item: (item["sample_size"], item["median_salary"], item["role_key"], item["city_key"], item["level_key"]), reverse=True)
+    return benchmarks
+
+
+def _market_salary_hash_key(row: dict[str, Any]) -> str:
+    payload = {
+        "source": normalize_text(row.get("source")),
+        "source_job_title": normalize_text(row.get("source_job_title")),
+        "source_city": normalize_text(row.get("source_city")),
+        "source_salary_text": normalize_text(row.get("source_salary_text")),
+        "salary_min": to_number(row.get("salary_min"), 0.0),
+        "salary_max": to_number(row.get("salary_max"), 0.0),
+        "salary_period": normalize_text(row.get("salary_period")),
+        "currency": normalize_text(row.get("currency")),
+        "experience_text": normalize_text(row.get("experience_text")),
+        "education_text": normalize_text(row.get("education_text")),
+        "company_name": normalize_text(row.get("company_name")),
+        "captured_at": normalize_text(row.get("captured_at")),
+        "raw_payload": row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {},
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _build_market_salary_raw_row(source: str, record: dict[str, Any]) -> dict[str, Any]:
+    source_job_title = normalize_text(record.get("source_job_title")) or normalize_text(record.get("job_title"))
+    if not source_job_title:
+        raise HTTPException(status_code=400, detail="source_job_title is required")
+
+    captured_at = normalize_text(record.get("captured_at")) or now_iso()
+    raw_payload = record.get("raw_payload") if isinstance(record.get("raw_payload"), dict) else {
+        key: value
+        for key, value in record.items()
+        if key != "raw_payload"
+    }
+    return {
+        "source": normalize_text(source) or normalize_text(record.get("source")) or "unknown",
+        "source_job_title": source_job_title,
+        "source_city": normalize_text(record.get("source_city")) or normalize_text(record.get("city")) or None,
+        "source_salary_text": normalize_text(record.get("source_salary_text")) or normalize_text(record.get("salary_text")) or "",
+        "salary_min": _parse_salary_amount(record.get("salary_min")),
+        "salary_max": _parse_salary_amount(record.get("salary_max")),
+        "salary_period": normalize_text(record.get("salary_period")) or "monthly",
+        "currency": normalize_text(record.get("currency")) or "CNY",
+        "experience_text": normalize_text(record.get("experience_text")) or None,
+        "education_text": normalize_text(record.get("education_text")) or None,
+        "company_name": normalize_text(record.get("company_name")) or None,
+        "captured_at": captured_at,
+        "raw_payload": raw_payload,
+        "hash_key": _market_salary_hash_key(
+            {
+                "source": normalize_text(source) or normalize_text(record.get("source")) or "unknown",
+                "source_job_title": source_job_title,
+                "source_city": normalize_text(record.get("source_city")) or normalize_text(record.get("city")) or None,
+                "source_salary_text": normalize_text(record.get("source_salary_text")) or normalize_text(record.get("salary_text")) or "",
+                "salary_min": _parse_salary_amount(record.get("salary_min")),
+                "salary_max": _parse_salary_amount(record.get("salary_max")),
+                "salary_period": normalize_text(record.get("salary_period")) or "monthly",
+                "currency": normalize_text(record.get("currency")) or "CNY",
+                "experience_text": normalize_text(record.get("experience_text")) or None,
+                "education_text": normalize_text(record.get("education_text")) or None,
+                "company_name": normalize_text(record.get("company_name")) or None,
+                "captured_at": captured_at,
+                "raw_payload": raw_payload,
+            }
+        ),
+    }
+
+
+def ingest_market_salary_records(client: Client, source: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+    if not records:
+        raise HTTPException(status_code=400, detail="records is required")
+
+    raw_rows = [_build_market_salary_raw_row(source, record) for record in records]
+    hash_keys = [row["hash_key"] for row in raw_rows]
+    client.table("market_salary_raw_records").upsert(raw_rows, on_conflict="hash_key").execute()
+    persisted_raw_rows = db.many(
+        client.table("market_salary_raw_records")
+        .select("*")
+        .in_("hash_key", hash_keys)
+        .execute()
+    )
+
+    normalized_rows = []
+    for raw_row in persisted_raw_rows:
+        normalized = normalize_market_salary_record(raw_row)
+        normalized_rows.append(
+            {
+                "raw_record_id": raw_row.get("id"),
+                "normalized_role": normalized.get("normalized_role"),
+                "normalized_city": normalized.get("normalized_city"),
+                "normalized_level": normalized.get("normalized_level"),
+                "salary_min_monthly": normalized.get("salary_min_monthly"),
+                "salary_median_monthly": normalized.get("salary_median_monthly"),
+                "salary_max_monthly": normalized.get("salary_max_monthly"),
+                "source": normalized.get("source"),
+                "captured_at": normalized.get("captured_at"),
+                "is_valid": normalized.get("is_valid"),
+                "invalid_reason": normalized.get("invalid_reason"),
+            }
+        )
+
+    if normalized_rows:
+        client.table("market_salary_normalized_records").upsert(normalized_rows, on_conflict="raw_record_id").execute()
+
+    return {
+        "source": normalize_text(source) or "unknown",
+        "raw_inserted": len(raw_rows),
+        "normalized_written": len(normalized_rows),
+        "normalized_valid": sum(1 for row in normalized_rows if row.get("is_valid")),
+        "normalized_invalid": sum(1 for row in normalized_rows if not row.get("is_valid")),
+    }
+
+
+def refresh_market_salary_benchmarks(client: Client, min_samples: int = 2) -> dict[str, Any]:
+    normalized_rows = db.many(
+        client.table("market_salary_normalized_records")
+        .select("*")
+        .order("captured_at", desc=True)
+        .execute()
+    )
+    benchmark_rows = build_market_salary_benchmarks(normalized_rows, min_samples=min_samples)
+    benchmark_keys = {
+        _salary_benchmark_key(row["role_key"], row["city_key"], row["level_key"])
+        for row in benchmark_rows
+    }
+    existing_rows = db.many(
+        client.table("market_salary_benchmarks")
+        .select("id,role_key,city_key,level_key")
+        .execute()
+    )
+    deleted_benchmark_ids: list[str] = []
+    for row in existing_rows:
+        row_id = normalize_text(row.get("id"))
+        if not row_id:
+            continue
+        if _salary_benchmark_key(row.get("role_key"), row.get("city_key"), row.get("level_key")) not in benchmark_keys:
+            client.table("market_salary_benchmarks").delete().eq("id", row_id).execute()
+            deleted_benchmark_ids.append(row_id)
+    if benchmark_rows:
+        client.table("market_salary_benchmarks").upsert(benchmark_rows, on_conflict="role_key,city_key,level_key").execute()
+
+    persisted_benchmarks = db.many(
+        client.table("market_salary_benchmarks")
+        .select("*")
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    return {
+        "normalized_records": len(normalized_rows),
+        "benchmark_count": len(persisted_benchmarks),
+        "deleted_benchmark_count": len(deleted_benchmark_ids),
+        "upserted_benchmark_count": len(benchmark_rows),
+        "benchmarks": persisted_benchmarks,
+    }
+
+
+def build_salary_dashboard_payload(benchmarks: list[dict[str, Any]], crawl_jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = {
+        "benchmark_count": len(benchmarks),
+        "crawl_job_count": len(crawl_jobs),
+        "pending_crawl_jobs": sum(1 for item in crawl_jobs if normalize_text(item.get("status")).lower() == "pending"),
+        "running_crawl_jobs": sum(1 for item in crawl_jobs if normalize_text(item.get("status")).lower() == "running"),
+        "successful_crawl_jobs": sum(1 for item in crawl_jobs if normalize_text(item.get("status")).lower() in {"success", "succeeded", "done"}),
+        "failed_crawl_jobs": sum(1 for item in crawl_jobs if normalize_text(item.get("status")).lower() in {"failed", "error"}),
+        "latest_crawl_status": normalize_text(crawl_jobs[0].get("status")) if crawl_jobs else "unknown",
+    }
+    return {
+        "summary": summary,
+        "benchmarks": benchmarks,
+        "crawl_jobs": crawl_jobs[:10],
+    }
+
+
+def normalize_offer_status(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    return re.sub(r"[\s\-]+", "_", text.casefold())
+
+
+def _estimate_salary_level_from_position(position: dict[str, Any]) -> str:
+    min_exp = to_number(position.get("min_exp"), -1)
+    if min_exp < 0:
+        return "unknown"
+    if min_exp >= 8:
+        return "lead"
+    if min_exp >= 5:
+        return "senior"
+    if min_exp >= 3:
+        return "mid"
+    return "junior"
+
+
+def _salary_benchmark_key(role_key: Any, city_key: Any, level_key: Any) -> str:
+    return "|".join(
+        [
+            normalize_text(role_key) or "unknown",
+            normalize_text(city_key) or "unknown",
+            normalize_text(level_key) or "unknown",
+        ]
+    )
+
+
+def _pretty_dimension_label(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return "Unknown"
+    return text.replace("_", " ").title()
+
+
+def _pick_fields(row: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    return {field: row.get(field) for field in fields if field in row}
+
+
+def _build_salary_benchmark_card(row: dict[str, Any]) -> dict[str, Any]:
+    role_key = normalize_text(row.get("role_key")) or "unknown"
+    city_key = normalize_text(row.get("city_key")) or "unknown"
+    level_key = normalize_text(row.get("level_key")) or "unknown"
+    return {
+        "key": _salary_benchmark_key(role_key, city_key, level_key),
+        "role_key": role_key,
+        "city_key": city_key,
+        "level_key": level_key,
+        "label": " / ".join(
+            [
+                _pretty_dimension_label(role_key),
+                _pretty_dimension_label(city_key),
+                _pretty_dimension_label(level_key),
+            ]
+        ),
+        "min_salary": int(round(to_number(row.get("min_salary")))),
+        "median_salary": int(round(to_number(row.get("median_salary")))),
+        "max_salary": int(round(to_number(row.get("max_salary")))),
+        "sample_size": int(round(to_number(row.get("sample_size")))),
+        "source_count": int(round(to_number(row.get("source_count")))),
+        "latest_source_at": normalize_text(row.get("latest_source_at")) or None,
+        "updated_at": normalize_text(row.get("updated_at")) or None,
+    }
+
+
+def _find_salary_benchmark(
+    benchmark_lookup: dict[str, dict[str, Any]],
+    role_key: str,
+    city_key: str,
+    level_key: str,
+) -> tuple[dict[str, Any] | None, str]:
+    search_order = [
+        (role_key, city_key, level_key),
+        (role_key, city_key, "unknown"),
+        (role_key, "unknown", level_key),
+        ("unknown", city_key, level_key),
+        (role_key, "unknown", "unknown"),
+        ("unknown", city_key, "unknown"),
+        ("unknown", "unknown", level_key),
+        ("unknown", "unknown", "unknown"),
+    ]
+    for index, (role, city, level) in enumerate(search_order):
+        benchmark = benchmark_lookup.get(_salary_benchmark_key(role, city, level))
+        if benchmark:
+            return benchmark, "exact" if index == 0 else "fallback"
+    return None, "none"
+
+
+def _build_salary_profile_card(
+    profile: dict[str, Any],
+    candidate_lookup: dict[str, dict[str, Any]],
+    position_lookup: dict[str, dict[str, Any]],
+    benchmark_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    candidate_id = normalize_text(profile.get("candidate_id"))
+    position_id = normalize_text(profile.get("position_id"))
+    candidate = candidate_lookup.get(candidate_id) if candidate_id else None
+    position = position_lookup.get(position_id) if position_id else None
+    candidate_card = _pick_fields(
+        candidate or {},
+        ["id", "name", "title", "department", "location", "edu", "exp", "prev_company", "highlight"],
+    ) if candidate else None
+    position_card = _pick_fields(
+        position or {},
+        ["id", "title", "department", "location", "status", "min_exp", "min_edu"],
+    ) if position else None
+    role_key = _infer_market_salary_role((position or candidate or {}).get("title"))
+    city_key = _infer_market_salary_city((position or candidate or {}).get("location"))
+    level_key = _estimate_salary_level_from_position(position or {})
+    benchmark_card, match_type = _find_salary_benchmark(benchmark_lookup, role_key, city_key, level_key)
+    benchmark_output = dict(benchmark_card) if benchmark_card else None
+    if benchmark_output is not None:
+        benchmark_output["match_type"] = match_type
+
+    offer_salary_raw = profile.get("offer_salary")
+    offer_salary = to_number(offer_salary_raw) if offer_salary_raw is not None else None
+    market_position = "unknown"
+    offer_vs_market = {
+        "delta_to_min": None,
+        "delta_to_median": None,
+        "delta_to_max": None,
+        "position": "unknown",
+    }
+    if benchmark_output and offer_salary is not None:
+        min_salary = to_number(benchmark_output.get("min_salary"))
+        median_salary = to_number(benchmark_output.get("median_salary"))
+        max_salary = to_number(benchmark_output.get("max_salary"))
+        offer_vs_market = {
+            "delta_to_min": int(round(offer_salary - min_salary)),
+            "delta_to_median": int(round(offer_salary - median_salary)),
+            "delta_to_max": int(round(offer_salary - max_salary)),
+            "position": "below_market" if offer_salary < min_salary else "above_market" if offer_salary > max_salary else "within_market",
+        }
+        market_position = offer_vs_market["position"]
+
+    return {
+        "id": profile.get("id"),
+        "candidate_id": candidate_id or None,
+        "position_id": position_id or None,
+        "expected_salary_min": profile.get("expected_salary_min"),
+        "expected_salary_max": profile.get("expected_salary_max"),
+        "current_salary": profile.get("current_salary"),
+        "budget_min": profile.get("budget_min"),
+        "budget_max": profile.get("budget_max"),
+        "offer_salary": offer_salary,
+        "offer_status": normalize_offer_status(profile.get("offer_status")) or "draft",
+        "notes": normalize_text(profile.get("notes")) or None,
+        "created_at": normalize_text(profile.get("created_at")) or None,
+        "updated_at": normalize_text(profile.get("updated_at")) or None,
+        "candidate": candidate_card,
+        "position": position_card,
+        "market_benchmark": benchmark_output,
+        "market_position": market_position,
+        "offer_vs_market": offer_vs_market,
+    }
+
+
+def build_salary_decision_dashboard_payload(
+    profiles: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+    benchmarks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    candidate_lookup = {
+        normalize_text(item.get("id")): item
+        for item in candidates
+        if normalize_text(item.get("id"))
+    }
+    position_lookup = {
+        normalize_text(item.get("id")): item
+        for item in positions
+        if normalize_text(item.get("id"))
+    }
+    benchmark_cards = [_build_salary_benchmark_card(item) for item in benchmarks]
+    benchmark_lookup = {item["key"]: item for item in benchmark_cards}
+    profile_cards = [
+        _build_salary_profile_card(profile, candidate_lookup, position_lookup, benchmark_lookup)
+        for profile in profiles
+    ]
+
+    offer_status_counts: dict[str, int] = {}
+    market_position_counts: dict[str, int] = {}
+    for profile in profile_cards:
+        status = normalize_offer_status(profile.get("offer_status")) or "unknown"
+        offer_status_counts[status] = offer_status_counts.get(status, 0) + 1
+        market_position = normalize_text(profile.get("market_position")) or "unknown"
+        market_position_counts[market_position] = market_position_counts.get(market_position, 0) + 1
+
+    summary = {
+        "profile_count": len(profile_cards),
+        "candidate_count": len(candidate_lookup),
+        "position_count": len(position_lookup),
+        "benchmark_count": len(benchmark_cards),
+        "offer_status_counts": offer_status_counts,
+        "market_position_counts": market_position_counts,
+        "latest_profile_updated_at": profile_cards[0]["updated_at"] if profile_cards else None,
+    }
+    return {
+        "summary": summary,
+        "benchmarks": benchmark_cards,
+        "profiles": profile_cards,
+        "meta": {
+            "as_of": now_iso(),
+        },
+    }
+
+
+def fetch_salary_decision_dashboard_data(client: Client) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        profiles = db.many(
+            client.table("candidate_salary_profiles")
+            .select("*")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        candidate_ids = [
+            normalize_text(item.get("candidate_id"))
+            for item in profiles
+            if normalize_text(item.get("candidate_id"))
+        ]
+        position_ids = [
+            normalize_text(item.get("position_id"))
+            for item in profiles
+            if normalize_text(item.get("position_id"))
+        ]
+        candidates = (
+            db.many(
+                client.table("candidates")
+                .select("*")
+                .in_("id", candidate_ids)
+                .execute()
+            )
+            if candidate_ids
+            else []
+        )
+        positions = (
+            db.many(
+                client.table("active_positions")
+                .select("*")
+                .in_("id", position_ids)
+                .execute()
+            )
+            if position_ids
+            else []
+        )
+        benchmarks = db.many(
+            client.table("market_salary_benchmarks")
+            .select("*")
+            .order("updated_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        return profiles, candidates, positions, benchmarks
+    except Exception as error:
+        if is_missing_table_error(
+            error,
+            ("candidate_salary_profiles", "market_salary_benchmarks"),
+        ):
+            return [], [], [], []
+        raise
 
 
 app = FastAPI(title="RecruitPro FastAPI Backend", version="0.1.0")
@@ -1224,6 +1898,153 @@ def list_market_salaries(authorization: str | None = Header(default=None)) -> li
         .order("average_salary", desc=True)
         .execute()
     )
+
+
+@app.get("/api/salary/dashboard")
+def get_salary_dashboard(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_user(authorization)
+    client = db.get_client(get_bearer_token(authorization))
+    try:
+        benchmarks = db.many(
+            client.table("market_salary_benchmarks")
+            .select("*")
+            .order("updated_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        crawl_jobs = db.many(
+            client.table("market_salary_crawl_jobs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+    except Exception as error:
+        if is_missing_table_error(
+            error,
+            ("market_salary_benchmarks", "market_salary_crawl_jobs"),
+        ):
+            return build_salary_dashboard_payload([], [])
+        raise
+    return build_salary_dashboard_payload(benchmarks, crawl_jobs)
+
+
+@app.get("/api/salary/decision-dashboard")
+def get_salary_decision_dashboard(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_user(authorization)
+    client = db.get_client(get_bearer_token(authorization))
+    profiles, candidates, positions, benchmarks = fetch_salary_decision_dashboard_data(client)
+    return build_salary_decision_dashboard_payload(profiles, candidates, positions, benchmarks)
+
+
+@app.post("/api/salary/market/import")
+def import_salary_market_records(
+    payload: SalaryMarketImportPayload,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_user(authorization)
+    client = db.get_client()
+    source = normalize_text(payload.source) or "unknown"
+    records = [record.model_dump() for record in payload.records]
+    ingestion_summary = ingest_market_salary_records(client, source, records)
+    refresh_summary = refresh_market_salary_benchmarks(client)
+    return {
+        "ok": True,
+        "summary": {
+            **ingestion_summary,
+            "benchmark_count": refresh_summary["benchmark_count"],
+            "deleted_benchmark_count": refresh_summary["deleted_benchmark_count"],
+        },
+        "benchmarks": refresh_summary["benchmarks"],
+    }
+
+
+@app.post("/api/salary/market/refresh")
+def refresh_salary_market_foundation(
+    payload: SalaryMarketRefreshPayload,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_user(authorization)
+    client = db.get_client()
+    refresh_summary = refresh_market_salary_benchmarks(client, min_samples=payload.min_samples)
+    return {
+        "ok": True,
+        "summary": refresh_summary,
+    }
+
+
+@app.patch("/api/salary/candidate-profile/{profile_id}")
+def patch_candidate_salary_profile(
+    profile_id: str,
+    payload: CandidateSalaryProfilePatchPayload,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_user(authorization)
+    client = db.get_client()
+    existing = db.first(
+        client.table("candidate_salary_profiles")
+        .select("*")
+        .eq("id", profile_id)
+        .limit(1)
+        .execute()
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Candidate salary profile not found")
+
+    patch: dict[str, Any] = {}
+    if payload.offer_salary is not None:
+        patch["offer_salary"] = payload.offer_salary
+    if payload.offer_status is not None:
+        normalized_status = normalize_offer_status(payload.offer_status)
+        if not normalized_status:
+            raise HTTPException(status_code=400, detail="offer_status is required")
+        patch["offer_status"] = normalized_status
+    if payload.notes is not None:
+        patch["notes"] = normalize_text(payload.notes) or None
+
+    if not patch:
+        raise HTTPException(status_code=400, detail="At least one field is required")
+
+    updated = db.first(
+        client.table("candidate_salary_profiles")
+        .update(patch)
+        .eq("id", profile_id)
+        .execute()
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Update candidate salary profile failed")
+
+    candidate_id = normalize_text(updated.get("candidate_id"))
+    position_id = normalize_text(updated.get("position_id"))
+    candidate = (
+        db.first(client.table("candidates").select("*").eq("id", candidate_id).limit(1).execute())
+        if candidate_id
+        else None
+    )
+    position = (
+        db.first(client.table("active_positions").select("*").eq("id", position_id).limit(1).execute())
+        if position_id
+        else None
+    )
+    benchmarks = db.many(
+        client.table("market_salary_benchmarks")
+        .select("*")
+        .order("updated_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    dashboard_payload = build_salary_decision_dashboard_payload(
+        [updated],
+        [candidate] if candidate else [],
+        [position] if position else [],
+        benchmarks,
+    )
+    return {
+        "ok": True,
+        "profile_id": profile_id,
+        "updated_fields": list(patch.keys()),
+        "profile": dashboard_payload["profiles"][0] if dashboard_payload["profiles"] else None,
+    }
 
 
 @app.post("/api/llm-usage")
@@ -2843,6 +3664,8 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
 
     candidate_light = {**candidate, "resume_skills": resume_skills, "resume_projects": resume_projects, "resume_work_items": resume_work_items}
     question_plan = build_question_plan(candidate_light, position)
+    if isinstance(payload.questionCount, int) and payload.questionCount > 0:
+        question_plan = question_plan[: payload.questionCount]
     skills = extract_skills_from_requirement(position.get("technical_requirements"))
     context_payload = {
         "candidate": {

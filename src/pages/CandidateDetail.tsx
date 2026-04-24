@@ -346,39 +346,43 @@ export default function CandidateDetail() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5 pb-20">
-      <button
-        onClick={() => navigate(-1)}
-        className="flex cursor-pointer items-center gap-2 text-sm text-on-surface-variant transition-colors hover:text-on-surface"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        返回候选人列表
-      </button>
+    <div className="min-h-full bg-[#f5f9ff]">
+      <div className="space-y-5 pb-20">
+        <button
+          onClick={() => navigate(-1)}
+          className="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-[#c7daf6] bg-[#f4f8ff] px-4 py-2.5 text-sm font-medium text-[#24476b] transition hover:bg-[#e9f1ff]"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          返回候选人列表
+        </button>
 
-      <section className="overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container-lowest">
-        <div className="h-1.5 bg-primary" />
-        <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_290px]">
+      <section className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+        <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:p-6">
           <div className="flex items-start gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-primary-container text-xl font-bold text-primary">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[20px] border border-[#d6e2f1] bg-[#f4f8ff] text-xl font-bold text-[#1f5fbf]">
               {candidate.name?.charAt(0) ?? '?'}
             </div>
             <div className="min-w-0 space-y-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-[11px] font-semibold tracking-[0.24em] text-[#426a9a]">
+                <FileSearch className="h-3.5 w-3.5" />
+                候选人详情
+              </div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-2xl font-semibold text-on-surface">{candidate.name}</h2>
+                <h2 className="text-3xl font-semibold tracking-tight text-[#16355f]">{candidate.name}</h2>
                 <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${recommendationClass}`}>
                   {recommendationLabel || candidate.tag || '待评估'}
                 </span>
               </div>
-              <p className="text-sm text-on-surface-variant">{candidate.title || '未识别职位'}</p>
-              <div className="flex flex-wrap gap-2 text-xs text-on-surface-variant">
-                <span className="rounded-md bg-surface-container px-2 py-1">{candidate.exp_years ?? '-'} 年经验</span>
-                <span className="rounded-md bg-surface-container px-2 py-1">{candidate.edu_level || candidate.edu || '学历未知'}</span>
-                <span className="rounded-md bg-surface-container px-2 py-1">{candidate.age ?? '-'} 岁</span>
-                <span className="inline-flex items-center gap-1 rounded-md bg-surface-container px-2 py-1">
+              <p className="text-sm text-[#5d7896]">{candidate.title || '未识别职位'}</p>
+              <div className="flex flex-wrap gap-2 text-xs text-[#5d7896]">
+                <span className="rounded-md border border-[#d6e2f1] bg-[#f8fbff] px-2 py-1">{candidate.exp_years ?? '-'} 年经验</span>
+                <span className="rounded-md border border-[#d6e2f1] bg-[#f8fbff] px-2 py-1">{candidate.edu_level || candidate.edu || '学历未知'}</span>
+                <span className="rounded-md border border-[#d6e2f1] bg-[#f8fbff] px-2 py-1">{candidate.age ?? '-'} 岁</span>
+                <span className="inline-flex items-center gap-1 rounded-md border border-[#d6e2f1] bg-[#f8fbff] px-2 py-1">
                   <Building2 className="h-3.5 w-3.5" />
                   {candidate.prev_company || '未知公司'}
                 </span>
-                <span className="inline-flex items-center gap-1 rounded-md bg-surface-container px-2 py-1">
+                <span className="inline-flex items-center gap-1 rounded-md border border-[#d6e2f1] bg-[#f8fbff] px-2 py-1">
                   <MapPin className="h-3.5 w-3.5" />
                   {candidate.city || '未知城市'}
                 </span>
@@ -386,13 +390,13 @@ export default function CandidateDetail() {
             </div>
           </div>
 
-          <div className="space-y-3">
-            <button
-              onClick={() => setInviteOpen(true)}
-              className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
-            >
-              <MessageSquare className="h-4 w-4" />
-              邀约面试
+            <div className="space-y-3">
+              <button
+                onClick={() => setInviteOpen(true)}
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#1f5fbf] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#194f9e]"
+              >
+                <MessageSquare className="h-4 w-4" />
+                邀约面试
             </button>
             {canDeleteCandidate && (
               <button
@@ -405,18 +409,18 @@ export default function CandidateDetail() {
                 {deletingCandidate ? '删除中...' : '删除候选人'}
               </button>
             )}
-            <div className="grid grid-cols-3 gap-2 rounded-lg border border-outline-variant/15 bg-surface-container-low p-3">
+            <div className="grid grid-cols-3 gap-2 rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3">
               <div>
-                <p className="text-[11px] text-on-surface-variant">总分</p>
-                <p className="text-lg font-semibold text-on-surface">{overallScore}</p>
+                <p className="text-[11px] text-[#6b86a4]">总分</p>
+                <p className="text-lg font-semibold text-[#16355f]">{overallScore}</p>
               </div>
               <div>
-                <p className="text-[11px] text-on-surface-variant">置信度</p>
-                <p className="text-lg font-semibold text-on-surface">{confidenceScore}%</p>
+                <p className="text-[11px] text-[#6b86a4]">置信度</p>
+                <p className="text-lg font-semibold text-[#16355f]">{confidenceScore}%</p>
               </div>
               <div>
-                <p className="text-[11px] text-on-surface-variant">风险数</p>
-                <p className={`text-lg font-semibold ${allRiskItems.length > 0 ? 'text-error' : 'text-on-surface'}`}>{allRiskItems.length}</p>
+                <p className="text-[11px] text-[#6b86a4]">风险数</p>
+                <p className={`text-lg font-semibold ${allRiskItems.length > 0 ? 'text-error' : 'text-[#16355f]'}`}>{allRiskItems.length}</p>
               </div>
             </div>
           </div>
@@ -425,36 +429,36 @@ export default function CandidateDetail() {
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.75fr)_minmax(280px,1fr)]">
         <div className="space-y-5">
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-base font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-base font-semibold text-[#16355f]">
               <Sparkles className="h-4 w-4 text-primary" />
               可解释匹配结果
             </h3>
 
             {matchResult ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-outline-variant/15 bg-surface-container-low p-4">
-                  <div className="mb-1.5 flex items-center justify-between text-xs text-on-surface-variant">
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+                  <div className="mb-1.5 flex items-center justify-between text-xs text-[#6b86a4]">
                     <span>综合匹配度</span>
                     <span>{overallScore}%</span>
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-surface-container">
+                  <div className="h-2 overflow-hidden rounded-full bg-white">
                     <div className="h-full rounded-full bg-primary" style={{ width: `${overallScore}%` }} />
                   </div>
-                  <p className="mt-3 text-sm leading-relaxed text-on-surface">
+                  <p className="mt-3 text-sm leading-relaxed text-[#24476b]">
                     {matchResult.summary_reason || candidate.highlight || '暂无匹配说明'}
                   </p>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-3.5">
+                  <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3.5">
                     <p className="mb-2 flex items-center gap-1 text-xs font-semibold text-primary">
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       命中技能
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {(matchResult.matched_skills || []).slice(0, 10).map((skill) => (
-                        <span key={skill} className="rounded-md bg-primary-container px-2 py-0.5 text-xs text-primary">
+                        <span key={skill} className="rounded-md border border-[#c7daf6] bg-white px-2 py-0.5 text-xs text-primary">
                           {skill}
                         </span>
                       ))}
@@ -462,14 +466,14 @@ export default function CandidateDetail() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-error/20 bg-error/5 p-3.5">
+                  <div className="rounded-[20px] border border-[#f1d8de] bg-[#fff6f8] p-3.5">
                     <p className="mb-2 flex items-center gap-1 text-xs font-semibold text-error">
                       <XCircle className="h-3.5 w-3.5" />
                       缺失技能
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {(matchResult.missing_skills || []).slice(0, 10).map((skill) => (
-                        <span key={skill} className="rounded-md bg-error-container px-2 py-0.5 text-xs text-error">
+                        <span key={skill} className="rounded-md border border-error/20 bg-white px-2 py-0.5 text-xs text-error">
                           {skill}
                         </span>
                       ))}
@@ -480,7 +484,7 @@ export default function CandidateDetail() {
 
                 {matchResult.requirement_breakdown && matchResult.requirement_breakdown.length > 0 && (
                   <div className="space-y-2.5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-variant">要求项分解</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[#6b86a4]">要求项分解</p>
                     {matchResult.requirement_breakdown.map((item, idx) => (
                       <div
                         key={`${item.requirement}-${idx}`}
@@ -512,11 +516,11 @@ export default function CandidateDetail() {
 
                 {evidencePreview.length > 0 && (
                   <div className="space-y-2.5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-on-surface-variant">证据片段</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[#6b86a4]">证据片段</p>
                     {evidencePreview.map((item) => (
-                      <div key={item.span_id} className="rounded-lg border border-outline-variant/15 bg-surface-container-low p-3">
-                        <p className="text-xs leading-relaxed text-on-surface">{item.text_excerpt}</p>
-                        <p className="mt-1 text-[11px] text-on-surface-variant">
+                      <div key={item.span_id} className="rounded-[18px] border border-[#d6e2f1] bg-[#f8fbff] p-3">
+                        <p className="text-xs leading-relaxed text-[#24476b]">{item.text_excerpt}</p>
+                        <p className="mt-1 text-[11px] text-[#6b86a4]">
                           {item.span_id}
                           {item.page_no != null ? ` · page ${item.page_no}` : ''}
                         </p>
@@ -532,8 +536,8 @@ export default function CandidateDetail() {
             )}
           </section>
 
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-base font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-base font-semibold text-[#16355f]">
               <Briefcase className="h-4 w-4 text-primary" />
               相关项目经历
             </h3>
@@ -544,20 +548,20 @@ export default function CandidateDetail() {
             ) : (
               <div className="space-y-3">
                 {projects.map((project) => (
-                  <div key={project.id} className="rounded-lg border border-outline-variant/15 bg-surface-container-low p-4">
+                  <div key={project.id} className="rounded-[20px] border border-[#d6e2f1] bg-[#f8fbff] p-4">
                     <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm font-semibold text-on-surface">{project.project_name}</p>
+                      <p className="text-sm font-semibold text-[#16355f]">{project.project_name}</p>
                       {(project.complexity_level || project.leadership_level) && (
-                        <span className="rounded-md bg-surface-container px-2 py-0.5 text-[11px] text-on-surface-variant">
+                        <span className="rounded-md border border-[#d6e2f1] bg-white px-2 py-0.5 text-[11px] text-[#6b86a4]">
                           {[project.complexity_level, project.leadership_level].filter(Boolean).join(' · ')}
                         </span>
                       )}
                     </div>
-                    <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">{project.project_summary || '暂无项目摘要'}</p>
+                    <p className="mt-2 text-xs leading-relaxed text-[#5d7896]">{project.project_summary || '暂无项目摘要'}</p>
                     {(project.tech_stack || []).length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
                         {(project.tech_stack || []).map((tech) => (
-                          <span key={tech} className="rounded-md bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+                          <span key={tech} className="rounded-md border border-[#c7daf6] bg-white px-2 py-0.5 text-[11px] text-primary">
                             {tech}
                           </span>
                         ))}
@@ -571,8 +575,8 @@ export default function CandidateDetail() {
         </div>
 
         <aside className="space-y-5">
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#16355f]">
               <FileSearch className="h-4 w-4 text-primary" />
               分项分数
             </h3>
@@ -580,10 +584,10 @@ export default function CandidateDetail() {
               {scoreBreakdown.map((item) => (
                 <div key={item.label}>
                   <div className="mb-1 flex items-center justify-between text-xs">
-                    <span className="text-on-surface-variant">{item.label}</span>
-                    <span className="font-medium text-on-surface">{item.value}%</span>
+                    <span className="text-[#6b86a4]">{item.label}</span>
+                    <span className="font-medium text-[#16355f]">{item.value}%</span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-container">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-[#edf3fb]">
                     <div className="h-full rounded-full bg-primary" style={{ width: `${item.value}%` }} />
                   </div>
                 </div>
@@ -591,8 +595,8 @@ export default function CandidateDetail() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#16355f]">
               <CheckCircle2 className="h-4 w-4 text-primary" />
               人工复核
             </h3>
@@ -658,8 +662,8 @@ export default function CandidateDetail() {
             )}
           </section>
 
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#16355f]">
               <ShieldAlert className="h-4 w-4 text-error" />
               风险与提示
             </h3>
@@ -680,12 +684,12 @@ export default function CandidateDetail() {
             )}
           </section>
 
-          <section className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest p-5">
-            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-on-surface">
+          <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#16355f]">
               <UserRound className="h-4 w-4 text-primary" />
               档案信息
             </h3>
-            <div className="space-y-2 text-xs text-on-surface-variant">
+            <div className="space-y-2 text-xs text-[#5d7896]">
               <p className="break-all">候选人 ID: {candidate.id}</p>
               <p className="inline-flex items-center gap-1">
                 <CalendarClock className="h-3.5 w-3.5" />
@@ -708,12 +712,13 @@ export default function CandidateDetail() {
         </aside>
       </div>
 
-      <InterviewInviteModal
-        open={inviteOpen}
-        candidate={candidate}
-        onClose={() => setInviteOpen(false)}
-        onSaved={() => navigate('/interviews')}
-      />
+        <InterviewInviteModal
+          open={inviteOpen}
+          candidate={candidate}
+          onClose={() => setInviteOpen(false)}
+          onSaved={() => navigate('/interviews')}
+        />
+      </div>
     </div>
   );
 }

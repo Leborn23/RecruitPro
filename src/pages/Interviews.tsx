@@ -1,7 +1,9 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { fetchInterviewReportByInterview, interviewRuntimeEdge, type InterviewReportRow } from '../lib/interviewRuntime';
-import { Calendar, Clock, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle } from 'lucide-react';
+import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
+import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
+import { Calendar, ChevronRight, Clock, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 type InterviewRow = {
@@ -28,6 +30,19 @@ type InterviewForm = {
   schedule_time: string;
   interviewer: string;
   location_type: string;
+};
+
+type CandidateOption = {
+  id: string;
+  name: string;
+  title: string | null;
+  p_id: string | null;
+};
+
+type PositionOption = {
+  id: string;
+  title: string;
+  location: string | null;
 };
 
 type ScoreReportView = {
@@ -103,7 +118,6 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '异常中断'
 };
 
-const INTERVIEW_DURATION_MINUTES = 45;
 const EARLY_ENTER_MINUTES = 5;
 
 const INSIGHT_TEXTS: Record<string, string> = {
@@ -118,12 +132,12 @@ const defaultDatetimeLocal = () =>
 
 const defaultForm = (): InterviewForm => ({
   candidate_id: null,
-  name: '周杰伦',
-  stage: '三轮技术面 (系统设计)',
-  position: 'Java高级架构师',
+  name: '',
+  stage: '技术初面 (算法与业务线)',
+  position: '',
   schedule_time: defaultDatetimeLocal(),
-  interviewer: '架构组长',
-  location_type: '腾讯会议 (云端白板)'
+  interviewer: '',
+  location_type: '腾讯会议 (云端评估)'
 });
 
 const buildInterviewRoomPath = (interviewId: string) => `/interview-room/${interviewId}`;
@@ -375,6 +389,7 @@ export default function Interviews() {
   const navigate = useNavigate();
 
   const [interviews, setInterviews] = useState<InterviewRow[]>([]);
+  const [selectedInterviewId, setSelectedInterviewId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -390,6 +405,9 @@ export default function Interviews() {
   const [reportReviewNote, setReportReviewNote] = useState('');
   const [submittingReportReview, setSubmittingReportReview] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
+  const [configuredQuestionCount, setConfiguredQuestionCount] = useState(DEFAULT_INTERVIEW_QUESTION_COUNT);
+  const [candidateOptions, setCandidateOptions] = useState<CandidateOption[]>([]);
+  const [positionOptions, setPositionOptions] = useState<PositionOption[]>([]);
   const [reportByInterviewId, setReportByInterviewId] = useState<Record<string, ScoreReportView>>({});
 
   const [searchText, setSearchText] = useState('');
@@ -401,6 +419,33 @@ export default function Interviews() {
   const [sortBy, setSortBy] = useState<SortBy>('schedule_desc');
 
   const [form, setForm] = useState<InterviewForm>(defaultForm());
+  const interviewDurationMinutes = getInterviewDurationMinutesForQuestionCount(configuredQuestionCount);
+  const stageSuggestions = useMemo(
+    () => Array.from(new Set(interviews.map((item) => String(item.stage ?? '').trim()).filter(Boolean))).slice(0, 8),
+    [interviews]
+  );
+  const interviewerSuggestions = useMemo(
+    () => Array.from(new Set(interviews.map((item) => String(item.interviewer ?? '').trim()).filter(Boolean))).slice(0, 8),
+    [interviews]
+  );
+  const locationSuggestions = useMemo(
+    () => Array.from(new Set(interviews.map((item) => String(item.location_type ?? '').trim()).filter(Boolean))).slice(0, 8),
+    [interviews]
+  );
+
+  const syncFormWithCandidate = (candidateId: string | null, explicitPositionId?: string | null) => {
+    const candidate = candidateOptions.find((item) => item.id === candidateId) ?? null;
+    const resolvedPositionId = explicitPositionId ?? candidate?.p_id ?? null;
+    const position = positionOptions.find((item) => item.id === resolvedPositionId) ?? null;
+
+    setForm((prev) => ({
+      ...prev,
+      candidate_id: candidateId,
+      name: candidate?.name ?? prev.name,
+      position: position?.title ?? candidate?.title ?? prev.position,
+      location_type: position?.location?.trim() ? position.location : prev.location_type,
+    }));
+  };
 
   const getTimeRemaining = (timeStr: string | null | undefined) => {
     if (!timeStr) return null;
@@ -422,7 +467,7 @@ export default function Interviews() {
       };
     }
 
-    const endAt = scheduledAt + INTERVIEW_DURATION_MINUTES * 60 * 1000;
+    const endAt = scheduledAt + interviewDurationMinutes * 60 * 1000;
     const remainingMin = Math.ceil((endAt - clockNow) / 60000);
     if (remainingMin >= 0) {
       return {
@@ -448,14 +493,14 @@ export default function Interviews() {
     if (Number.isNaN(scheduledAt)) return false;
 
     const diffMin = (scheduledAt - clockNow) / 60000;
-    return diffMin <= EARLY_ENTER_MINUTES && diffMin >= -INTERVIEW_DURATION_MINUTES;
+    return diffMin <= EARLY_ENTER_MINUTES && diffMin >= -interviewDurationMinutes;
   };
 
   const isEnded = (timeStr: string | null | undefined) => {
     if (!timeStr) return false;
     const scheduledAt = new Date(timeStr).getTime();
     if (Number.isNaN(scheduledAt)) return false;
-    return clockNow > scheduledAt + INTERVIEW_DURATION_MINUTES * 60 * 1000;
+    return clockNow > scheduledAt + interviewDurationMinutes * 60 * 1000;
   };
 
   const isRemote = (locationType: string | null | undefined) => {
@@ -495,10 +540,46 @@ export default function Interviews() {
   };
 
   const fetchInterviews = async () => {
+    const { data: settingsData } = await supabase
+      .from('company_settings')
+      .select('interview_question_count')
+      .single();
+    setConfiguredQuestionCount(
+      normalizeInterviewQuestionCount((settingsData as { interview_question_count?: unknown } | null)?.interview_question_count)
+    );
+
     const { data } = await supabase.from('upcoming_interviews').select('*').order('created_at', { ascending: false });
     const rows = (data ?? []) as InterviewRow[];
     setInterviews(rows);
     await fetchReportsForInterviews(rows);
+  };
+
+  const fetchModalOptions = async () => {
+    const [{ data: candidateData }, { data: positionData }] = await Promise.all([
+      supabase.from('candidates').select('id,name,title,p_id').order('created_at', { ascending: false }),
+      supabase.from('active_positions').select('id,title,location').order('created_at', { ascending: false }),
+    ]);
+
+    setCandidateOptions(
+      ((candidateData ?? []) as Array<Record<string, unknown>>)
+        .map((item) => ({
+          id: String(item.id ?? '').trim(),
+          name: String(item.name ?? '').trim(),
+          title: typeof item.title === 'string' ? item.title : null,
+          p_id: typeof item.p_id === 'string' ? item.p_id : null,
+        }))
+        .filter((item) => item.id && item.name)
+    );
+
+    setPositionOptions(
+      ((positionData ?? []) as Array<Record<string, unknown>>)
+        .map((item) => ({
+          id: String(item.id ?? '').trim(),
+          title: String(item.title ?? '').trim(),
+          location: typeof item.location === 'string' ? item.location : null,
+        }))
+        .filter((item) => item.id && item.title)
+    );
   };
 
   const handleOpenRoomPage = (interview: InterviewRow) => {
@@ -537,6 +618,7 @@ export default function Interviews() {
 
   useEffect(() => {
     void fetchInterviews();
+    void fetchModalOptions();
   }, []);
 
   useEffect(() => {
@@ -646,6 +728,28 @@ export default function Interviews() {
     return { scheduled, inProgress, completed, aiPass, aiReject };
   }, [interviewsWithReport]);
 
+  const heroDensityStats = useMemo(() => {
+    const todayKey = new Date(clockNow).toDateString();
+    let generatedReports = 0;
+    let todayInterviews = 0;
+
+    interviewsWithReport.forEach(({ interview, report }) => {
+      if (report) generatedReports += 1;
+      if (interview.schedule_time) {
+        const schedule = new Date(interview.schedule_time);
+        if (!Number.isNaN(schedule.getTime()) && schedule.toDateString() === todayKey) {
+          todayInterviews += 1;
+        }
+      }
+    });
+
+    return {
+      generatedReports,
+      pendingReports: Math.max(interviewsWithReport.length - generatedReports, 0),
+      todayInterviews,
+    };
+  }, [clockNow, interviewsWithReport]);
+
   const visibleInterviews = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
 
@@ -710,6 +814,19 @@ export default function Interviews() {
   }, [interviewsWithReport, searchText, statusFilter, decisionFilter, scoreBandFilter, riskBandFilter, reportOnlyFilter, sortBy]);
 
   useEffect(() => {
+    if (visibleInterviews.length === 0) {
+      setSelectedInterviewId(null);
+      return;
+    }
+
+    if (selectedInterviewId && visibleInterviews.some(({ interview }) => interview.id === selectedInterviewId)) {
+      return;
+    }
+
+    setSelectedInterviewId(visibleInterviews[0].interview.id);
+  }, [visibleInterviews, selectedInterviewId]);
+
+  useEffect(() => {
     const prefill = location.state?.prefillCandidate;
     if (!prefill) return;
 
@@ -728,6 +845,20 @@ export default function Interviews() {
     setIsModalOpen(true);
     window.history.replaceState({}, document.title);
   }, [location.state]);
+
+  useEffect(() => {
+    if (!isModalOpen || !form.candidate_id) return;
+    const candidate = candidateOptions.find((item) => item.id === form.candidate_id);
+    if (!candidate) return;
+    const position = positionOptions.find((item) => item.id === candidate.p_id);
+
+    setForm((prev) => ({
+      ...prev,
+      name: candidate.name || prev.name,
+      position: position?.title ?? candidate.title ?? prev.position,
+      location_type: position?.location?.trim() ? position.location : prev.location_type,
+    }));
+  }, [candidateOptions, form.candidate_id, isModalOpen, positionOptions]);
 
   const openNewModal = () => {
     setForm(defaultForm());
@@ -779,7 +910,7 @@ export default function Interviews() {
   };
 
   const handleSaveInterview = async () => {
-    if (!form.name || !form.position) return alert('请填写完整候选人与职位信息');
+    if (!form.candidate_id || !form.name || !form.position) return alert('请先选择候选人和岗位');
 
     setSaving(true);
     let apiError: { message: string } | null = null;
@@ -965,17 +1096,172 @@ export default function Interviews() {
     }
   };
 
+  const selectedInterviewEntry =
+    visibleInterviews.find(({ interview }) => interview.id === selectedInterviewId) ?? visibleInterviews[0] ?? null;
+
+  const selectedInterview = selectedInterviewEntry?.interview ?? null;
+  const selectedReport = selectedInterviewEntry?.report;
+  const selectedAction = selectedInterview ? getPrimaryAction(selectedInterview) : null;
+  const selectedStepStates = selectedInterview ? getStepStates(selectedInterview) : [];
+  const selectedTimeRemaining = selectedInterview ? getTimeRemaining(selectedInterview.schedule_time) : null;
+  const selectedSummaryItems = selectedInterview
+    ? [
+        { label: '候选人', value: selectedInterview.name || '待补充' },
+        { label: '岗位', value: selectedInterview.position || '未关联岗位' },
+        { label: '面试官', value: selectedInterview.interviewer || '未指定' },
+        {
+          label: '排期时间',
+          value: selectedInterview.schedule_time?.replace('T', ' ').slice(0, 16) || '待安排'
+        }
+      ]
+    : [];
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 pb-12 relative">
-      <div className="flex flex-col md:flex-row gap-4 justify-between md:items-end mb-8">
-        <div>
-          <h2 className="text-2xl font-medium text-on-surface mb-2">实时面试排期中控 (DB Linked)</h2>
-          <p className="text-sm text-on-surface-variant">支持 AI 结构化初面：prepare/start/turn/finish/score 全流程。</p>
+    <div className="relative space-y-6 pb-12 animate-in fade-in duration-500">
+      <section className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+        <div className="grid gap-4 px-6 py-5 lg:grid-cols-[1.35fr_0.85fr] lg:px-8">
+          <div className="space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-[11px] font-semibold tracking-[0.24em] text-[#426a9a]">
+                  <Calendar className="h-3.5 w-3.5" />
+                  面试中控
+                </div>
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-tight text-[#16355f]">面试调度台</h1>
+                  <p className="mt-1 text-sm text-[#5d7896]">先看场次状态、报告产出和当前关注对象，再决定排期与处理动作。</p>
+                </div>
+              </div>
+
+              <button
+                onClick={openNewModal}
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[#1f5fbf] px-4 py-3 text-sm font-medium text-white shadow-[0_18px_36px_-20px_rgba(31,95,191,0.9)] transition hover:bg-[#194f9e]"
+              >
+                <Plus className="h-4 w-4" />
+                新建面试
+              </button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-[20px] border border-[#d8e4f4] bg-[#f8fbff] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">待开始</p>
+                <p className="mt-2 text-3xl font-semibold text-[#16355f]">{boardStats.scheduled}</p>
+              </div>
+              <div className="rounded-[20px] border border-[#d8e4f4] bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">进行中</p>
+                <p className="mt-2 text-3xl font-semibold text-[#1f5fbf]">{boardStats.inProgress}</p>
+              </div>
+              <div className="rounded-[20px] border border-[#d8e4f4] bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">已结束</p>
+                <p className="mt-2 text-3xl font-semibold text-[#16355f]">{boardStats.completed}</p>
+              </div>
+              <div className="rounded-[20px] border border-[#d9eddf] bg-[#f5fbf7] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#5f896c]">建议通过</p>
+                <p className="mt-2 text-3xl font-semibold text-[#24623a]">{boardStats.aiPass}</p>
+              </div>
+              <div className="rounded-[20px] border border-[#f1d8de] bg-[#fff6f8] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#9d6576]">建议淘汰</p>
+                <p className="mt-2 text-3xl font-semibold text-[#8e3550]">{boardStats.aiReject}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">今日排期</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{heroDensityStats.todayInterviews} 场</p>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">已出报告</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{heroDensityStats.generatedReports} 场</p>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">待评分</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{heroDensityStats.pendingReports} 场</p>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">当前筛选</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{visibleInterviews.length} 场</p>
+              </div>
+            </div>
+          </div>
+
+            <div className="rounded-[24px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#6b86a4]">当前关注</p>
+                <h2 className="mt-1 text-lg font-semibold text-[#16355f]">
+                  {selectedInterview?.name || '暂无面试场次'}
+                </h2>
+              </div>
+              {selectedTimeRemaining ? (
+                <span className="rounded-full border border-[#d6e2f1] bg-white px-3 py-1 text-xs font-medium text-[#24476b]">
+                  {selectedTimeRemaining.label}
+                </span>
+              ) : null}
+            </div>
+
+            {selectedInterview ? (
+              <div className="mt-3 space-y-3">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {selectedSummaryItems.map((item) => (
+                    <div key={item.label} className="rounded-[16px] border border-[#d6e2f1] bg-white/88 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b86a4]">{item.label}</p>
+                      <p className="mt-1.5 text-sm font-medium text-[#24476b]">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-[16px] border border-[#d6e2f1] bg-white/88 p-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-[#d6e2f1] bg-[#f8fbff] px-2.5 py-1 text-xs text-[#24476b]">
+                      状态：{toStatusLabel(selectedInterview.status)}
+                    </span>
+                    <span className="rounded-full border border-[#d6e2f1] bg-[#f8fbff] px-2.5 py-1 text-xs text-[#24476b]">
+                      报告：{selectedReport ? '已生成' : '未生成'}
+                    </span>
+                    <span className="rounded-full border border-[#d6e2f1] bg-[#f8fbff] px-2.5 py-1 text-xs text-[#24476b]">
+                      AI结论：{selectedReport ? toRecommendationLabel(selectedReport.recommendation) : '待评分'}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedAction ? (
+                      <button
+                        type="button"
+                        onClick={() => void handlePrimaryAction(selectedInterview)}
+                        disabled={selectedAction.disabled || runtimeBusyInterviewId === selectedInterview.id}
+                        className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium transition ${
+                          selectedAction.style === 'danger'
+                            ? 'bg-[#8e3550] text-white hover:bg-[#7b2d45]'
+                            : selectedAction.style === 'secondary'
+                              ? 'border border-[#c7daf6] bg-white text-[#1f5fbf] hover:bg-[#f4f8ff]'
+                              : selectedAction.style === 'muted'
+                                ? 'cursor-not-allowed bg-[#dfe8f3] text-[#6b86a4]'
+                                : 'bg-[#1f5fbf] text-white hover:bg-[#194f9e]'
+                        }`}
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                        {runtimeBusyInterviewId === selectedInterview.id ? '处理中...' : selectedAction.label}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(selectedInterview)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[#c7daf6] bg-white px-3.5 py-2.5 text-sm font-medium text-[#24476b] transition hover:bg-[#f4f8ff]"
+                    >
+                      <Pencil className="h-4 w-4" />
+                      编辑排期
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-[18px] border border-dashed border-[#cddcf0] bg-white/70 px-4 py-10 text-center text-sm text-[#6b86a4]">
+                当前没有可处理的面试场次。
+              </div>
+            )}
+          </div>
         </div>
-        <button onClick={openNewModal} className="cursor-pointer bg-primary text-white px-4 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 shadow-sm transition-colors flex items-center justify-center gap-2">
-          <Plus className="w-4 h-4" /> 新建排期 / 面试
-        </button>
-      </div>
+      </section>
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -990,16 +1276,48 @@ export default function Interviews() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5 flex flex-col">
                   <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">候选人姓名</label>
-                  <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                  <select
+                    value={form.candidate_id ?? ''}
+                    onChange={(e) => syncFormWithCandidate(e.target.value || null)}
+                    className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all"
+                  >
+                    <option value="">请选择候选人</option>
+                    {candidateOptions.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="space-y-1.5 flex flex-col">
                   <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">应聘职位</label>
-                  <input type="text" value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                  <select
+                    value={positionOptions.find((item) => item.title === form.position)?.id ?? ''}
+                    onChange={(e) => syncFormWithCandidate(form.candidate_id, e.target.value || null)}
+                    className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all"
+                  >
+                    <option value="">请选择岗位</option>
+                    {positionOptions.map((position) => (
+                      <option key={position.id} value={position.id}>
+                        {position.title}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
+              {form.candidate_id ? (
+                <div className="rounded-xl border border-[#d6e2f1] bg-[#f7fbff] px-3 py-2 text-xs text-[#5d7896]">
+                  已联动候选人库与岗位库：{form.name || '未命名'} · {form.position || '未匹配岗位'}
+                </div>
+              ) : null}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">面试轮次</label>
-                <input type="text" value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                <input type="text" list="interview-stage-options" value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                <datalist id="interview-stage-options">
+                  {stageSuggestions.map((item) => (
+                    <option key={item} value={item} />
+                  ))}
+                </datalist>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5 flex flex-col">
@@ -1008,12 +1326,22 @@ export default function Interviews() {
                 </div>
                 <div className="space-y-1.5 flex flex-col">
                   <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">面试官</label>
-                  <input type="text" value={form.interviewer} onChange={(e) => setForm({ ...form, interviewer: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                  <input type="text" list="interviewer-options" value={form.interviewer} onChange={(e) => setForm({ ...form, interviewer: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                  <datalist id="interviewer-options">
+                    {interviewerSuggestions.map((item) => (
+                      <option key={item} value={item} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">地点与形式</label>
-                <input type="text" value={form.location_type} onChange={(e) => setForm({ ...form, location_type: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                <input type="text" list="location-options" value={form.location_type} onChange={(e) => setForm({ ...form, location_type: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
+                <datalist id="location-options">
+                  {locationSuggestions.map((item) => (
+                    <option key={item} value={item} />
+                  ))}
+                </datalist>
               </div>
             </div>
             <div className="px-6 py-4 border-t border-outline-variant/15 flex justify-end gap-3 bg-surface-container-low/30">
@@ -1241,48 +1569,31 @@ export default function Interviews() {
           </div>
         )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3">
-          <p className="text-[11px] text-on-surface-variant">待开始</p>
-          <p className="text-xl font-semibold text-on-surface">{boardStats.scheduled}</p>
-        </div>
-        <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3">
-          <p className="text-[11px] text-on-surface-variant">进行中</p>
-          <p className="text-xl font-semibold text-primary">{boardStats.inProgress}</p>
-        </div>
-        <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3">
-          <p className="text-[11px] text-on-surface-variant">已结束</p>
-          <p className="text-xl font-semibold text-on-surface">{boardStats.completed}</p>
-        </div>
-        <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3">
-          <p className="text-[11px] text-on-surface-variant">AI通过</p>
-          <p className="text-xl font-semibold text-emerald-600">{boardStats.aiPass}</p>
-        </div>
-        <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3">
-          <p className="text-[11px] text-on-surface-variant">AI淘汰</p>
-          <p className="text-xl font-semibold text-error">{boardStats.aiReject}</p>
-        </div>
-      </div>
-
-      <div className="grid lg:grid-cols-4 gap-6 items-start">
-        <div className="lg:col-span-1 space-y-4">
-          <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl p-4 space-y-3">
-            <h3 className="font-semibold text-sm text-on-surface">筛选与排序</h3>
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] text-on-surface-variant">搜索</label>
-              <input
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="候选人 / 岗位 / 面试官"
-                className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-3 py-2 text-sm outline-none focus:border-primary"
-              />
+      <div className="grid items-start gap-6 xl:grid-cols-[0.78fr_1.22fr]">
+        <div className="space-y-4">
+      <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-[#16355f]">筛选条件</h2>
+              <span className="rounded-full border border-[#d6e2f1] bg-[#f8fbff] px-3 py-1 text-xs text-[#24476b]">
+                {visibleInterviews.length} / {interviews.length}
+              </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="mt-4 space-y-3">
               <div className="space-y-1.5">
-                <label className="text-[11px] text-on-surface-variant">状态</label>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-2 py-2 text-xs">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">搜索</label>
+                <input
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  placeholder="候选人 / 岗位 / 面试官"
+                  className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#86aee7] focus:bg-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">状态</label>
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
                   <option value="all">全部</option>
                   <option value="scheduled">待开始</option>
                   <option value="ready">待开始</option>
@@ -1291,8 +1602,8 @@ export default function Interviews() {
                 </select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] text-on-surface-variant">AI结论</label>
-                <select value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value as RecommendationFilter)} className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-2 py-2 text-xs">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">AI结论</label>
+                <select value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value as RecommendationFilter)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
                   <option value="all">全部</option>
                   <option value="pending">待评分</option>
                   <option value="hire">通过</option>
@@ -1303,10 +1614,10 @@ export default function Interviews() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1.5">
-                <label className="text-[11px] text-on-surface-variant">总分区间</label>
-                <select value={scoreBandFilter} onChange={(e) => setScoreBandFilter(e.target.value as ScoreBand)} className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-2 py-2 text-xs">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">总分区间</label>
+                <select value={scoreBandFilter} onChange={(e) => setScoreBandFilter(e.target.value as ScoreBand)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
                   <option value="all">全部</option>
                   <option value="80plus">80分及以上</option>
                   <option value="60to79">60-79分</option>
@@ -1314,8 +1625,8 @@ export default function Interviews() {
                 </select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] text-on-surface-variant">风险区间</label>
-                <select value={riskBandFilter} onChange={(e) => setRiskBandFilter(e.target.value as RiskBand)} className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-2 py-2 text-xs">
+                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">风险区间</label>
+                <select value={riskBandFilter} onChange={(e) => setRiskBandFilter(e.target.value as RiskBand)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
                   <option value="all">全部</option>
                   <option value="low">低风险</option>
                   <option value="medium">中风险</option>
@@ -1325,8 +1636,8 @@ export default function Interviews() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] text-on-surface-variant">排序</label>
-              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)} className="w-full rounded-md bg-surface-container-low border border-outline-variant/20 px-2 py-2 text-xs">
+              <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">排序</label>
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
                 <option value="schedule_desc">面试时间（最近优先）</option>
                 <option value="schedule_asc">面试时间（最早优先）</option>
                 <option value="score_desc">总分（高到低）</option>
@@ -1336,53 +1647,114 @@ export default function Interviews() {
               </select>
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-on-surface-variant">
+            <label className="flex items-center gap-2 text-xs text-[#56718f]">
               <input type="checkbox" checked={reportOnlyFilter} onChange={(e) => setReportOnlyFilter(e.target.checked)} />
               仅看已出报告
             </label>
 
-            <div className="rounded-md bg-primary/10 border border-primary/20 px-3 py-2 text-xs text-primary">
-              当前结果：{visibleInterviews.length} / {interviews.length}
+                  <div className="rounded-[18px] border border-[#d6e2f1] bg-[#f7fbff] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">当前结果</p>
+              <p className="mt-2 text-sm font-medium text-[#24476b]">
+                共匹配 <span className="font-semibold text-[#16355f]">{visibleInterviews.length}</span> 场
+              </p>
             </div>
-          </div>
+            </div>
+          </section>
 
-          <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl p-4">
-            <h3 className="font-semibold text-sm text-on-surface mb-2">AI 面试流程</h3>
-            <p className="text-xs text-on-surface-variant leading-relaxed">线上考场支持 prepare/start/turn/finish/score，全流程已打通。</p>
-          </div>
+      <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <h2 className="text-lg font-semibold text-[#16355f]">当前面试链路</h2>
+            <div className="mt-4 grid grid-cols-5 gap-2">
+              {selectedStepStates.length > 0 ? (
+                selectedStepStates.map((step) => (
+                  <div
+                    key={step.key}
+                    className={`rounded-2xl border px-2 py-3 text-center text-[11px] font-semibold ${
+                      step.state === 'done'
+                        ? 'border-[#c7daf6] bg-[#eef5ff] text-[#1f5fbf]'
+                        : step.state === 'active'
+                          ? 'border-[#f1d8de] bg-[#fff6f8] text-[#8e3550]'
+                          : 'border-[#d6e2f1] bg-[#f8fbff] text-[#6b86a4]'
+                    }`}
+                  >
+                    {step.label}
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-5 rounded-[18px] border border-dashed border-[#d6e2f1] px-4 py-6 text-center text-sm text-[#6b86a4]">
+                  暂无流程数据。
+                </div>
+              )}
+            </div>
+          </section>
         </div>
 
-        <div className="lg:col-span-3 space-y-4">
+        <section className="space-y-4">
+      <div className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+            <div className="flex items-center justify-between gap-3 border-b border-[#e4edf8] pb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-[#16355f]">排期列表</h2>
+              </div>
+              <button
+                type="button"
+                onClick={openNewModal}
+                className="inline-flex items-center gap-2 rounded-xl border border-[#c7daf6] bg-[#f4f8ff] px-3.5 py-2 text-sm font-medium text-[#1f5fbf] transition hover:bg-white"
+              >
+                <Plus className="h-4 w-4" />
+                新建
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
           {visibleInterviews.length === 0 ? (
-            <div className="p-12 text-center text-on-surface-variant bg-surface-container-lowest rounded-xl border border-outline-variant/10 shadow-sm flex flex-col items-center justify-center gap-3">
-              <Calendar className="w-8 h-8 text-outline-variant/50" />
-              <p>{interviews.length === 0 ? '暂无排期记录，点击右上角新建一场面试吧。' : '当前筛选条件下无匹配场次，请调整筛选。'}</p>
+            <div className="rounded-[24px] border border-dashed border-[#cddcf0] bg-[#f8fbff] px-6 py-14 text-center">
+              <Calendar className="mx-auto h-9 w-9 text-[#89a6c7]" />
+              <p className="mt-4 text-base font-medium text-[#24476b]">
+                {interviews.length === 0 ? '暂无排期记录' : '当前筛选条件下没有匹配场次'}
+              </p>
             </div>
           ) : (
             visibleInterviews.map(({ interview, report }, idx) => (
-              <div key={interview.id} className={`bg-surface-container-lowest border ${idx === 0 ? 'border-error/30 shadow-md' : 'border-outline-variant/15'} rounded-xl p-5 shadow-sm relative overflow-hidden transition-all group`}>
-                <div className={`absolute top-0 left-0 w-1 h-full ${idx === 0 ? 'bg-error' : 'bg-surface-container-high group-hover:bg-primary transition-colors'}`} />
+              <button
+                key={interview.id}
+                type="button"
+                onClick={() => setSelectedInterviewId(interview.id)}
+                className={`relative w-full overflow-hidden rounded-[24px] border p-5 text-left transition ${
+                  interview.id === selectedInterview?.id
+                  ? 'border-[#86aee7] bg-[#f7fbff] shadow-[0_14px_32px_-28px_rgba(21,53,102,0.18)]'
+                    : idx === 0
+                          ? 'border-[#f1d8de] bg-[#fffafb] shadow-[0_14px_30px_-28px_rgba(142,53,80,0.18)]'
+                      : 'border-[#dde8f5] bg-white hover:border-[#aac6ea] hover:bg-[#fbfdff]'
+                }`}
+              >
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h3 className="font-semibold text-base text-on-surface">{interview.stage || '待定轮次'}</h3>
-                    <p className="text-sm text-on-surface-variant mt-1.5 flex gap-2 items-center">
-                      <span className="font-medium text-on-surface">候选人: {interview.name}</span>
-                      <span className="text-outline-variant">|</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-semibold text-[#16355f]">{interview.stage || '待定轮次'}</h3>
+                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#24476b]">
+                        {toStatusLabel(interview.status)}
+                      </span>
+                      {report ? (
+                        <span className="rounded-full border border-[#c7daf6] bg-[#eef5ff] px-2.5 py-1 text-[11px] text-[#1f5fbf]">
+                          {toRecommendationLabel(report.recommendation)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1.5 flex items-center gap-2 text-sm text-[#56718f]">
+                      <span className="font-medium text-[#24476b]">候选人：{interview.name}</span>
+                      <span className="text-[#9ab0c9]">|</span>
                       面试官: {interview.interviewer || '未定专家'}
                     </p>
-                    <p className="text-[11px] font-bold text-primary mt-2 uppercase tracking-wide bg-primary/10 w-fit px-2 py-0.5 rounded border border-primary/20">{interview.position || '未关联岗位'}</p>
-                    <p className="text-[11px] text-on-surface-variant mt-2">状态: {toStatusLabel(interview.status)}{report ? ' · 已生成报告' : ''}</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <span className="text-[11px] px-2 py-0.5 rounded-md border border-outline-variant/20 bg-surface-container-low text-on-surface-variant">
+                    <p className="mt-2 inline-flex w-fit rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#1f5fbf]">
+                      {interview.position || '未关联岗位'}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
                         总分: {report?.overall_score ?? '待评分'}
                       </span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-md border border-primary/20 bg-primary/10 text-primary">
-                        结论: {report ? toRecommendationLabel(report.recommendation) : '待评分'}
-                      </span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-md border border-outline-variant/20 bg-surface-container-low text-on-surface-variant">
+                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
                         风险: {report?.risk_score ?? '-'}
                       </span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-md border border-outline-variant/20 bg-surface-container-low text-on-surface-variant">
+                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
                         进度: {extractAnsweredProgress(report)}
                       </span>
                     </div>
@@ -1392,22 +1764,22 @@ export default function Interviews() {
                       const res = getTimeRemaining(interview.schedule_time);
                       if (!res) return null;
                       return (
-                        <span className={`${res.color} px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded border flex items-center gap-1.5 shrink-0`}>
+                        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#d6e2f1] bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#24476b]">
                           <Bell className={`w-3 h-3 ${res.pulse ? 'animate-bounce' : ''}`} /> {res.label}
                         </span>
                       );
                     })()}
-                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => openEditModal(interview)} className="cursor-pointer text-on-surface-variant hover:text-primary transition-colors p-1.5 hover:bg-surface-container rounded-md">
+                    <div className="flex gap-2">
+                      <button onClick={(event) => { event.stopPropagation(); openEditModal(interview); }} className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-white hover:text-[#1f5fbf]">
                         <Pencil className="w-4 h-4" />
                       </button>
                       {confirmDeleteId === interview.id ? (
-                        <div className="flex bg-error/10 border border-error/20 rounded-md overflow-hidden">
-                          <button onClick={() => setConfirmDeleteId(null)} className="px-2 py-1 text-xs text-on-surface-variant hover:bg-error/5 transition-colors cursor-pointer">取消</button>
-                          <button onClick={() => void handleDeleteConfirmed(interview.id)} className="px-2 py-1 text-xs text-error font-medium bg-error/10 hover:bg-error/20 transition-colors cursor-pointer">确认</button>
+                        <div className="flex overflow-hidden rounded-xl border border-[#f1d8de] bg-[#fff6f8]">
+                          <button onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(null); }} className="px-2 py-1 text-xs text-[#56718f] transition hover:bg-[#fff1f4]">取消</button>
+                          <button onClick={(event) => { event.stopPropagation(); void handleDeleteConfirmed(interview.id); }} className="px-2 py-1 text-xs font-medium text-[#8e3550] transition hover:bg-[#ffe6ec]">确认</button>
                         </div>
                       ) : (
-                        <button onClick={() => setConfirmDeleteId(interview.id)} className="cursor-pointer text-on-surface-variant hover:text-error transition-colors p-1.5 hover:bg-error-container/50 rounded-md">
+                        <button onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(interview.id); }} className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-[#fff1f4] hover:text-[#8e3550]">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}
@@ -1415,12 +1787,12 @@ export default function Interviews() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-6 mt-4 pt-4 border-t border-outline-variant/10">
-                  <div className="flex items-center gap-1.5 text-sm font-medium text-on-surface">
-                    <Clock className="w-4 h-4 text-on-surface-variant" />
+                <div className="mt-4 flex items-center gap-6 border-t border-[#e4edf8] pt-4">
+                  <div className="flex items-center gap-1.5 text-sm font-medium text-[#24476b]">
+                    <Clock className="w-4 h-4 text-[#6b86a4]" />
                     {interview.schedule_time?.replace('T', ' ').slice(0, 16) || '待定排期'}
                   </div>
-                  <div className={`flex items-center gap-1.5 text-sm font-medium ${isRemote(interview.location_type) ? 'text-primary' : 'text-on-surface-variant/60'}`}>
+                  <div className={`flex items-center gap-1.5 text-sm font-medium ${isRemote(interview.location_type) ? 'text-[#1f5fbf]' : 'text-[#6b86a4]'}`}>
                     <Video className="w-4 h-4" /> {interview.location_type || '线下评估'}
                   </div>
                 </div>
@@ -1449,10 +1821,13 @@ export default function Interviews() {
                           : '加载中...';
 
                       return (
-                        <div className="w-full rounded-xl border border-outline-variant/15 bg-surface-container-low p-4 space-y-3">
+                        <div className="w-full space-y-3 rounded-[22px] border border-[#d6e2f1] bg-[#f8fbff] p-4">
                           <div className="flex flex-wrap items-center gap-2.5">
                             <button
-                              onClick={() => void handlePrimaryAction(interview)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handlePrimaryAction(interview);
+                              }}
                               disabled={primaryAction.disabled || busy}
                               className={`cursor-pointer text-xs font-semibold h-9 px-4 rounded-md transition-colors shadow-sm inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed ${primaryClass}`}
                             >
@@ -1467,10 +1842,10 @@ export default function Interviews() {
                                 key={step.key}
                                 className={`rounded-md border px-2 py-1 text-[11px] text-center font-medium ${
                                   step.state === 'done'
-                                    ? 'border-primary/20 bg-primary/10 text-primary'
+                                    ? 'border-[#c7daf6] bg-[#eef5ff] text-[#1f5fbf]'
                                     : step.state === 'active'
-                                      ? 'border-secondary/25 bg-secondary/10 text-secondary'
-                                      : 'border-outline-variant/20 bg-surface-container text-on-surface-variant/70'
+                                      ? 'border-[#f1d8de] bg-[#fff6f8] text-[#8e3550]'
+                                      : 'border-[#d6e2f1] bg-white text-[#6b86a4]'
                                 }`}
                               >
                                 {step.label}
@@ -1481,7 +1856,7 @@ export default function Interviews() {
                           <div>
                             {primaryAction.type === 'view_report' ? (
                               <span className="inline-flex items-center rounded-md bg-primary/10 px-2.5 py-1 text-[11px] text-primary/85">
-                                已完成，点击主按钮可直接查看报告
+                                已完成，点击主按钮查看报告
                               </span>
                             ) : ended ? (
                               <span className="inline-flex items-center rounded-md bg-surface-container-high px-2.5 py-1 text-[11px] text-on-surface-variant/80">
@@ -1500,14 +1875,14 @@ export default function Interviews() {
 
                           <div className="mt-1 flex flex-wrap items-center gap-2 pt-3 border-t border-outline-variant/15">
                             <button
-                              onClick={() => handleOpenRoomPage(interview)}
-                              className="cursor-pointer bg-surface-container-high text-on-surface text-xs font-medium h-8 px-3 rounded-md hover:bg-surface-container-high/80 transition-colors border border-outline-variant/20"
+                              onClick={(event) => { event.stopPropagation(); handleOpenRoomPage(interview); }}
+                              className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#24476b] transition hover:bg-[#f3f8ff]"
                             >
                               打开考场页
                             </button>
                             <button
-                              onClick={() => void handleCopyRoomLink(interview)}
-                              className="cursor-pointer bg-surface-container-high text-on-surface-variant text-xs font-medium h-8 px-3 rounded-md hover:bg-surface-container-high/80 transition-colors border border-outline-variant/20"
+                              onClick={(event) => { event.stopPropagation(); void handleCopyRoomLink(interview); }}
+                              className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#56718f] transition hover:bg-[#f3f8ff]"
                             >
                               复制链接+密码
                             </button>
@@ -1529,16 +1904,18 @@ export default function Interviews() {
                     </div>
                   )}
                 </div>
-              </div>
+              </button>
             ))
           )}
+            </div>
 
           {visibleInterviews.length > 0 && (
-            <div className="bg-secondary-container/30 border border-secondary-container rounded-xl p-4 flex justify-between items-center text-xs">
-              <span className="text-on-surface font-medium opacity-70">Supabase 实时同步中</span>
+            <div className="mt-4 flex items-center justify-between rounded-[22px] border border-[#d6e2f1] bg-[#f8fbff] p-4 text-xs">
+              <span className="font-medium text-[#56718f]">实时数据已同步到当前面试列表</span>
             </div>
           )}
-        </div>
+          </div>
+        </section>
       </div>
     </div>
   );

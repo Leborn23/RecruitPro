@@ -1,0 +1,3 @@
+source,job_title,city,salary_text,salary_min,salary_max,salary_period,experience_text,education_text,company_name,captured_at
+sample-csv,Computer Vision Engineer,Shenzhen,28k-42k/month,28000,42000,monthly,3-5 years,Bachelor,Shoreline AI,2026-04-18T12:00:00Z
+sample-csv,Algorithm Engineer,Beijing,35k-55k/month,35000,55000,monthly,5-8 years,Master,Blue Peak,2026-04-18T13:00:00Z

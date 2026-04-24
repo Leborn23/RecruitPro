@@ -382,6 +382,18 @@ export default function Screening() {
       : (batchEndedAt ?? Date.now()) - batchStartedAt;
   const batchProgressPercent =
     batchSummary.total === 0 ? 0 : Math.round((batchSummary.completed / batchSummary.total) * 100);
+  const activeUploadCount = uploads.filter((u) => u.status === 'processing' || u.status === 'pending').length;
+  const reviewQueueCount = pendingList.length + failedUploads.filter((u) => !isUploadCancelled(u)).length;
+  const currentPositionHighlights = (selectedPosition?.technical_requirements ?? '')
+    .split(/[\n,，。；;]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const currentDecisionNotes = [
+    selectedPosition ? `当前阈值 ${passScore} 分，60 到 ${passScore - 1} 分进入待定池。` : '请先选择岗位后再执行上传与分池。',
+    activeUploadCount > 0 ? `当前有 ${activeUploadCount} 个任务正在处理。` : '当前没有处理中任务。',
+    focusUploads.length > 0 ? `任务列表优先展示待处理和失败记录，共 ${focusUploads.length} 条。` : '当前没有待处理或失败记录。'
+  ];
 
   const onPipelineStageChange = (nextStage: PipelineProgressStage, message: string) => {
     setStage(nextStage);
@@ -778,82 +790,195 @@ export default function Screening() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-12">
-      <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-        <div className="space-y-2">
-          <h2 className="text-2xl font-medium text-on-surface">简历筛选</h2>
-          <p className="text-sm text-on-surface-variant">上传后自动完成信息提炼与岗位匹配，并输出可解释结果。</p>
-        </div>
+      <section className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+        <div className="grid gap-4 px-6 py-5 lg:grid-cols-[1.35fr_0.85fr] lg:px-8">
+          <div className="space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-[11px] font-semibold tracking-[0.24em] text-[#426a9a]">
+                  <Target className="h-3.5 w-3.5" />
+                  筛选中枢
+                </div>
+                <div>
+                  <h2 className="text-3xl font-semibold tracking-tight text-[#16355f]">简历筛选</h2>
+                  <p className="mt-1 text-sm text-[#5d7896]">
+                    先看当前岗位的筛选状态、待复核数量和处理任务，再执行上传与推进。
+                  </p>
+                </div>
+              </div>
 
-        <div className="relative">
-          <select
-            value={selectedPositionId}
-            onChange={(e) => setSelectedPositionId(e.target.value)}
-            className="appearance-none bg-primary/10 text-primary text-sm font-semibold pl-10 pr-10 py-2 rounded-lg border border-primary/20 hover:bg-primary/15 transition-all cursor-pointer outline-none"
-          >
-            {positions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-              </option>
-            ))}
-          </select>
-          <Target className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary" />
-        </div>
-      </div>
-
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={handleClickUploadZone}
-        className={`relative border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all ${
-          isRunning || isBatchRunning
-            ? 'border-primary/30 bg-primary/5 pointer-events-none'
-            : isDragging
-              ? 'border-primary bg-primary/10'
-              : 'border-outline-variant/30 hover:border-primary/50 bg-surface-container-lowest hover:bg-surface-container-low cursor-pointer'
-        }`}
-      >
-        <input ref={fileInputRef} type="file" className="hidden" accept=".pdf,.doc,.docx" multiple onChange={handleFileSelect} />
-
-        {isRunning || isBatchRunning ? (
-          <div className="flex flex-col items-center text-center max-w-md w-full">
-            <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
-            <h3 className="text-base font-semibold text-on-surface mb-2">{isBatchRunning ? '批量识别中' : STAGE_LABELS[stage]}</h3>
-            <p className="text-sm text-on-surface-variant">
-              {isBatchRunning ? `已完成 ${batchSummary.completed}/${batchSummary.total}，请在弹窗查看明细` : stageMessage}
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center text-center">
-            <div className="w-16 h-16 rounded-full bg-primary-container text-primary flex items-center justify-center mb-4">
-              <UploadCloud className="w-8 h-8" />
+              <div className="relative">
+                <span className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">
+                  当前岗位
+                </span>
+                <select
+                  value={selectedPositionId}
+                  onChange={(e) => setSelectedPositionId(e.target.value)}
+                  aria-label="切换当前筛选岗位"
+                  className="appearance-none rounded-2xl border border-[#c7daf6] bg-[#f4f8ff] pl-10 pr-10 py-3 text-sm font-semibold text-[#1f5fbf] outline-none transition hover:border-[#aac6ea] hover:bg-[#eef5ff]"
+                >
+                  {positions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </select>
+                <Target className="absolute left-3 top-[calc(50%+10px)] h-4 w-4 -translate-y-1/2 text-[#1f5fbf]" />
+              </div>
             </div>
-            <h3 className="text-lg font-medium text-on-surface mb-2">点击上传或拖拽简历到此处（支持批量）</h3>
-            <p className="text-sm text-on-surface-variant max-w-md">
-              支持 PDF / DOC / DOCX。单次最多 {MAX_BATCH_FILES} 份，系统会自动识别并输出匹配结果。
-            </p>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-[20px] border border-[#d8e4f4] bg-[#f8fbff] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">当前岗位候选人</p>
+                <p className="mt-2 text-3xl font-semibold text-[#16355f]">{allCandidates.length}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('strong')}
+                className={`rounded-[20px] border p-4 text-left transition ${
+                  activeTab === 'strong'
+                    ? 'border-[#86aee7] bg-[#f3f8ff]'
+                    : 'border-[#d8e4f4] bg-white hover:border-[#aac6ea]'
+                }`}
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">强匹配池</p>
+                <p className="mt-2 text-3xl font-semibold text-[#1f5fbf]">{strongList.length}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('pending')}
+                className={`rounded-[20px] border p-4 text-left transition ${
+                  activeTab === 'pending'
+                    ? 'border-[#dccde8] bg-[#fbf7ff]'
+                    : 'border-[#d8e4f4] bg-white hover:border-[#cdbce0]'
+                }`}
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">待复核</p>
+                <p className="mt-2 text-3xl font-semibold text-[#7551a6]">{reviewQueueCount}</p>
+              </button>
+              <div className="rounded-[20px] border border-[#d8e4f4] bg-white p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">当前阈值</p>
+                <p className="mt-2 text-3xl font-semibold text-[#16355f]">{passScore}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">处理中任务</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{activeUploadCount} 条</p>
+              </div>
+              <div className="rounded-[16px] border border-[#f1d8de] bg-[#fff6f8] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9d6576]">失败任务</p>
+                <p className="mt-1 text-base font-semibold text-[#8e3550]">{failedUploads.filter((u) => !isUploadCancelled(u)).length} 条</p>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">当前列表</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{displayedCandidates.length} 人</p>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">任务视图</p>
+                <p className="mt-1 text-base font-semibold text-[#16355f]">{taskListMode === 'focused' ? '待处理优先' : '全部任务'}</p>
+              </div>
+            </div>
+
+            <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b86a4]">快速操作</p>
+                  <p className="text-sm text-[#5d7896]">
+                    {isBatchRunning
+                      ? `批量识别进行中，已完成 ${batchSummary.completed}/${batchSummary.total}。`
+                      : isRunning
+                        ? stageMessage
+                        : `支持 PDF / DOC / DOCX，单次最多 ${MAX_BATCH_FILES} 份。`}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClickUploadZone}
+                    disabled={isRunning || isBatchRunning}
+                    className="inline-flex items-center gap-2 rounded-xl border border-[#c7daf6] bg-white px-4 py-2 text-sm font-medium text-[#1f5fbf] transition hover:bg-[#eef5ff] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isRunning || isBatchRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                    上传简历
+                  </button>
+                  {batchItems.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowBatchModal(true)}
+                      className="cursor-pointer rounded-xl border border-[#d6e2f1] bg-white px-3 py-2 text-xs font-medium text-[#355b87] hover:bg-[#eef5ff]"
+                    >
+                      批量结果 {batchSummary.total}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
           </div>
-        )}
-      </div>
+
+          <div className="rounded-[24px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[#24476b]">
+              <CheckCircle2 className="h-4 w-4 text-[#1f5fbf]" />
+              当前岗位规则摘要
+            </div>
+            <div className="mt-3 space-y-2.5">
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-4 py-3 text-sm text-[#24476b]">
+                <div className="font-medium">{selectedPosition?.title || '未选择岗位'}</div>
+                <div className="mt-1 text-[#5d7896]">
+                  {selectedPosition
+                    ? `${selectedPosition.department || '未设置部门'} · ${selectedPosition.location || '未设置地点'}`
+                    : '选择岗位后显示规则摘要'}
+                </div>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-4 py-3">
+                <div className="flex flex-wrap gap-2">
+                  {currentPositionHighlights.length > 0 ? (
+                    currentPositionHighlights.slice(0, 3).map((item) => (
+                      <span key={item} className="rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-3 py-1 text-xs text-[#1f5fbf]">
+                        {item}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-[#5d7896]">当前岗位尚未填写技术要求摘要。</span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-[16px] border border-[#d6e2f1] bg-white px-4 py-3 text-sm text-[#5d7896]">
+                {currentDecisionNotes.slice(0, 2).map((item) => (
+                  <p key={item} className="leading-6">
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {pipelineError && (
-        <div className="rounded-lg border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">{pipelineError}</div>
+        <div className="rounded-2xl border border-error/30 bg-error-container/20 px-4 py-3 text-sm text-error">{pipelineError}</div>
       )}
+
       {batchItems.length > 0 && (
-        <div className="rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className="flex flex-col gap-3 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest px-4 py-3 md:flex-row md:items-center md:justify-between">
           <div className="text-sm text-on-surface">
             批量任务：成功 {batchSummary.success}，失败 {batchSummary.failed}，共 {batchSummary.total} 份
           </div>
           <button
             type="button"
             onClick={() => setShowBatchModal(true)}
-            className="cursor-pointer text-xs px-3 py-1.5 rounded border border-primary/30 text-primary hover:bg-primary/8"
+            className="cursor-pointer rounded-xl border border-primary/30 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/8"
           >
             查看批量结果
           </button>
         </div>
       )}
-      <div className="grid md:grid-cols-4 gap-4">
+
+      <div className="grid gap-6 xl:grid-cols-[1.18fr_0.82fr]">
+        <div className="space-y-6">
+          <div className="grid md:grid-cols-4 gap-4">
         <button
           onClick={() => setActiveTab('strong')}
           className={`border rounded-xl p-5 text-center transition-all ${
@@ -894,81 +1019,183 @@ export default function Screening() {
           <p className="text-xs font-bold uppercase tracking-widest text-on-surface-variant mb-2">通过阈值</p>
           <p className="text-3xl font-semibold text-on-surface">{passScore}</p>
         </div>
-      </div>
+          </div>
 
-      <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-outline-variant/10 bg-surface/50 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <h3 className="font-medium text-sm text-on-surface">候选人列表</h3>
-            <span className="text-xs text-on-surface-variant">
-              {selectedPosition ? `当前岗位：${selectedPosition.title}` : '按综合分展示'}
-            </span>
+          <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-outline-variant/10 bg-surface/50 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <h3 className="font-medium text-sm text-on-surface">候选人列表</h3>
+                <span className="text-xs text-on-surface-variant">
+                  {selectedPosition ? `当前岗位：${selectedPosition.title}` : '按综合分展示'}
+                </span>
+              </div>
+            </div>
+
+            {displayedCandidates.length === 0 ? (
+              <div className="p-8 text-center text-sm text-on-surface-variant">当前分组暂无数据</div>
+            ) : (
+              <div className="divide-y divide-outline-variant/10">
+                {displayedCandidates.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-6 hover:bg-surface-container-low/50 transition-colors grid md:grid-cols-[1fr_2fr_auto] gap-6 items-center"
+                  >
+                    <div>
+                      <div className="flex items-center gap-3 mb-1">
+                        <h4 className="font-medium text-base text-on-surface">{item.name}</h4>
+                        <span className="text-[10px] font-bold uppercase tracking-wider bg-primary-container text-primary px-2 py-0.5 rounded">
+                          匹配度 {item.match ?? 0}%
+                        </span>
+                      </div>
+                      <p className="text-sm font-medium text-on-surface-variant">
+                        {item.title || '未识别职位'} @ <span className="text-on-surface">{item.prev_company || '未知公司'}</span>
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span className="inline-block rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 text-xs text-primary">
+                          {item.tag || '待评估'}
+                        </span>
+                        {item.human_decision && (
+                          <span className={`inline-block rounded border px-1.5 py-0.5 text-xs ${humanDecisionClass(item.human_decision)}`}>
+                            {humanDecisionTag(item.human_decision)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-surface-container-low rounded-lg p-3 text-sm">
+                      <p className="text-xs font-semibold text-on-surface-variant mb-1 uppercase tracking-wider">匹配结论</p>
+                      <p className="text-on-surface leading-loose">{item.highlight || '暂无说明'}</p>
+                      {item.review_note && (
+                        <p className="mt-2 text-xs text-on-surface-variant">
+                          人工备注：{item.review_note}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-2 min-w-[120px]">
+                      <button
+                        onClick={() => setInviteCandidate(item)}
+                        className="cursor-pointer bg-primary text-white text-xs font-medium px-4 py-2 rounded shadow-sm hover:bg-primary/90 transition-colors flex justify-center items-center gap-1.5"
+                      >
+                        邀约面试 <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() =>
+                          navigate(`/candidates/${item.id}${buildCandidateDetailQuery(selectedPositionId, item.match_id)}`, {
+                            state: { positionId: selectedPositionId, matchId: item.match_id }
+                          })
+                        }
+                        className="cursor-pointer bg-surface-container border border-outline-variant/20 text-on-surface text-xs font-medium px-4 py-2 rounded hover:bg-surface-container-high transition-colors flex justify-center items-center gap-1.5"
+                      >
+                        查看详情 <Eye className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-
-        {displayedCandidates.length === 0 ? (
-          <div className="p-8 text-center text-sm text-on-surface-variant">当前分组暂无数据</div>
-        ) : (
-          <div className="divide-y divide-outline-variant/10">
-            {displayedCandidates.map((item) => (
+        <aside className="space-y-6">
+          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest shadow-sm">
+            <div className="border-b border-outline-variant/10 px-5 py-4">
+              <h3 className="text-sm font-medium text-on-surface">上传与处理</h3>
+            </div>
+            <div className="space-y-4 p-5">
               <div
-                key={item.id}
-                className="p-6 hover:bg-surface-container-low/50 transition-colors grid md:grid-cols-[1fr_2fr_auto] gap-6 items-center"
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={handleClickUploadZone}
+                className={`relative flex flex-col items-center justify-center rounded-[24px] border-2 border-dashed p-8 text-center transition-all ${
+                  isRunning || isBatchRunning
+                    ? 'border-primary/30 bg-primary/5 pointer-events-none'
+                    : isDragging
+                      ? 'border-primary bg-primary/10'
+                      : 'border-outline-variant/30 bg-surface hover:border-primary/50 hover:bg-surface-container-low cursor-pointer'
+                }`}
               >
-                <div>
-                  <div className="flex items-center gap-3 mb-1">
-                    <h4 className="font-medium text-base text-on-surface">{item.name}</h4>
-                    <span className="text-[10px] font-bold uppercase tracking-wider bg-primary-container text-primary px-2 py-0.5 rounded">
-                      匹配度 {item.match ?? 0}%
-                    </span>
-                  </div>
-                  <p className="text-sm font-medium text-on-surface-variant">
-                    {item.title || '未识别职位'} @ <span className="text-on-surface">{item.prev_company || '未知公司'}</span>
-                  </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className="inline-block rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 text-xs text-primary">
-                      {item.tag || '待评估'}
-                    </span>
-                    {item.human_decision && (
-                      <span className={`inline-block rounded border px-1.5 py-0.5 text-xs ${humanDecisionClass(item.human_decision)}`}>
-                        {humanDecisionTag(item.human_decision)}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                <input ref={fileInputRef} type="file" className="hidden" accept=".pdf,.doc,.docx" multiple onChange={handleFileSelect} />
 
-                <div className="bg-surface-container-low rounded-lg p-3 text-sm">
-                  <p className="text-xs font-semibold text-on-surface-variant mb-1 uppercase tracking-wider">匹配结论</p>
-                  <p className="text-on-surface leading-loose">{item.highlight || '暂无说明'}</p>
-                  {item.review_note && (
-                    <p className="mt-2 text-xs text-on-surface-variant">
-                      人工备注：{item.review_note}
+                {isRunning || isBatchRunning ? (
+                  <div className="flex max-w-md w-full flex-col items-center text-center">
+                    <Loader2 className="mb-4 h-10 w-10 animate-spin text-primary" />
+                    <h3 className="mb-2 text-base font-semibold text-on-surface">{isBatchRunning ? '批量识别中' : STAGE_LABELS[stage]}</h3>
+                    <p className="text-sm text-on-surface-variant">
+                      {isBatchRunning ? `已完成 ${batchSummary.completed}/${batchSummary.total}，请在弹窗查看明细` : stageMessage}
                     </p>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center text-center">
+                    <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary-container text-primary">
+                      <UploadCloud className="h-8 w-8" />
+                    </div>
+                    <h3 className="mb-2 text-lg font-medium text-on-surface">上传简历批次</h3>
+                    <p className="max-w-md text-sm text-on-surface-variant">
+                      支持 PDF / DOC / DOCX，单次最多 {MAX_BATCH_FILES} 份。
+                    </p>
+                  </div>
+                )}
+              </div>
 
-                <div className="flex flex-col gap-2 min-w-[120px]">
-                  <button
-                    onClick={() => setInviteCandidate(item)}
-                    className="cursor-pointer bg-primary text-white text-xs font-medium px-4 py-2 rounded shadow-sm hover:bg-primary/90 transition-colors flex justify-center items-center gap-1.5"
-                  >
-                    邀约面试 <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() =>
-                      navigate(`/candidates/${item.id}${buildCandidateDetailQuery(selectedPositionId, item.match_id)}`, {
-                        state: { positionId: selectedPositionId, matchId: item.match_id }
-                      })
-                    }
-                    className="cursor-pointer bg-surface-container border border-outline-variant/20 text-on-surface text-xs font-medium px-4 py-2 rounded hover:bg-surface-container-high transition-colors flex justify-center items-center gap-1.5"
-                  >
-                    查看详情 <Eye className="w-3 h-3" />
-                  </button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-outline-variant/15 bg-surface px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-on-surface-variant">处理中任务</p>
+                  <p className="mt-2 text-2xl font-semibold text-on-surface">{activeUploadCount}</p>
+                </div>
+                <div className="rounded-2xl border border-outline-variant/15 bg-surface px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-on-surface-variant">失败任务</p>
+                  <p className="mt-2 text-2xl font-semibold text-error">{failedUploads.filter((u) => !isUploadCancelled(u)).length}</p>
                 </div>
               </div>
-            ))}
+            </div>
           </div>
-        )}
+
+          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest overflow-hidden shadow-sm">
+            <div className="border-b border-outline-variant/10 bg-surface/50 px-5 py-4">
+              <h3 className="text-sm font-medium text-on-surface">任务监控</h3>
+            </div>
+            <div className="space-y-3 p-5 text-sm">
+              <div className="rounded-2xl border border-outline-variant/15 bg-surface px-4 py-3 text-on-surface">
+                当前展示 {visibleUploads.length} 条任务记录
+              </div>
+              <div className="inline-flex items-center rounded-xl border border-outline-variant/20 bg-surface-container-low p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setTaskListMode('focused')}
+                  className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs transition-colors ${
+                    taskListMode === 'focused' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  待处理/失败（{focusUploads.length}）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTaskListMode('all')}
+                  className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs transition-colors ${
+                    taskListMode === 'all' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  全部（{uploads.length}）
+                </button>
+              </div>
+              {taskListMode === 'focused' && hiddenCompletedOrCancelledCount > 0 && (
+                <p className="text-xs text-on-surface-variant">已隐藏完成或取消任务 {hiddenCompletedOrCancelledCount} 条</p>
+              )}
+              {selectedFailedUploadIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteSelectedFailedUploads()}
+                  disabled={isDeletingUploads}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-xs font-medium text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {isDeletingUploads ? '删除中...' : `删除选中（${selectedFailedUploadIds.length}）`}
+                </button>
+              )}
+            </div>
+          </div>
+        </aside>
       </div>
 
       <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl overflow-hidden shadow-sm">
@@ -1018,55 +1245,55 @@ export default function Screening() {
             {visibleUploads.map((u) => (
               <div key={u.id} className="px-6 py-4 hover:bg-surface-container-low/40 transition-colors">
                 <div className="flex items-start gap-3">
-                <div className="pt-1 w-5">
-                  {u.status === 'failed' && !isUploadCancelled(u) && (
-                    <input
-                      type="checkbox"
-                      checked={selectedFailedUploadIds.includes(u.id)}
-                      onChange={(e) => handleSelectFailedUpload(u.id, e.target.checked)}
-                      className="w-4 h-4 cursor-pointer accent-primary"
-                      aria-label={`选择失败任务 ${u.file_name}`}
-                    />
-                  )}
-                </div>
-                <div className="flex-1 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                  <div>
-                    <p className="text-sm text-on-surface">{u.file_name}</p>
-                    <p className="text-xs text-on-surface-variant">{new Date(u.created_at).toLocaleString()}</p>
+                  <div className="pt-1 w-5">
                     {u.status === 'failed' && !isUploadCancelled(u) && (
-                      <p className="mt-1 text-xs text-error max-w-[780px] truncate">
-                        {humanizeUploadError(u.error_message, u.error_code)}
-                      </p>
+                      <input
+                        type="checkbox"
+                        checked={selectedFailedUploadIds.includes(u.id)}
+                        onChange={(e) => handleSelectFailedUpload(u.id, e.target.checked)}
+                        className="w-4 h-4 cursor-pointer accent-primary"
+                        aria-label={`选择失败任务 ${u.file_name}`}
+                      />
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    {(() => {
-                      const isCancelled = isUploadCancelled(u);
-                      const primaryLabel =
-                        u.status === 'completed'
-                          ? '已完成'
-                          : isCancelled
-                            ? '已取消'
-                            : u.status === 'failed'
-                              ? '失败'
-                              : STAGE_LABELS[u.pipeline_stage as PipelineProgressStage] || STATUS_LABELS[u.status] || '处理中';
-                      const primaryClass =
-                        u.status === 'completed'
-                          ? 'bg-primary-container text-primary'
-                          : isCancelled
-                            ? 'bg-surface-container-high text-on-surface-variant'
-                            : u.status === 'failed'
-                              ? 'bg-error-container text-error'
-                              : 'bg-secondary-container text-secondary';
-                      return (
-                        <span className={`text-xs px-2 py-1 rounded ${primaryClass}`}>
-                          {primaryLabel}
-                        </span>
-                      );
-                    })()}
+                  <div className="flex-1 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                    <div>
+                      <p className="text-sm text-on-surface">{u.file_name}</p>
+                      <p className="text-xs text-on-surface-variant">{new Date(u.created_at).toLocaleString()}</p>
+                      {u.status === 'failed' && !isUploadCancelled(u) && (
+                        <p className="mt-1 text-xs text-error max-w-[780px] truncate">
+                          {humanizeUploadError(u.error_message, u.error_code)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const isCancelled = isUploadCancelled(u);
+                        const primaryLabel =
+                          u.status === 'completed'
+                            ? '已完成'
+                            : isCancelled
+                              ? '已取消'
+                              : u.status === 'failed'
+                                ? '失败'
+                                : STAGE_LABELS[u.pipeline_stage as PipelineProgressStage] || STATUS_LABELS[u.status] || '处理中';
+                        const primaryClass =
+                          u.status === 'completed'
+                            ? 'bg-primary-container text-primary'
+                            : isCancelled
+                              ? 'bg-surface-container-high text-on-surface-variant'
+                              : u.status === 'failed'
+                                ? 'bg-error-container text-error'
+                                : 'bg-secondary-container text-secondary';
+                        return (
+                          <span className={`text-xs px-2 py-1 rounded ${primaryClass}`}>
+                            {primaryLabel}
+                          </span>
+                        );
+                      })()}
+                    </div>
                   </div>
                 </div>
-              </div>
               </div>
             ))}
           </div>

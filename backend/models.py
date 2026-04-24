@@ -10,6 +10,7 @@ class PrepareInterviewPayload(BaseModel):
     candidateId: str
     positionId: str
     mode: str = "async_qa"
+    questionCount: int | None = None
 
 
 class StartInterviewPayload(BaseModel):
@@ -47,6 +48,30 @@ class RoomPasswordPayload(BaseModel):
     action: str
     interviewId: str
     password: str | None = None
+
+
+class SalaryMarketRawRecordPayload(BaseModel):
+    source_job_title: str
+    source_city: str | None = None
+    source_salary_text: str | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_period: str | None = "monthly"
+    currency: str | None = "CNY"
+    experience_text: str | None = None
+    education_text: str | None = None
+    company_name: str | None = None
+    captured_at: str | None = None
+    raw_payload: dict[str, Any] | None = None
+
+
+class SalaryMarketImportPayload(BaseModel):
+    source: str
+    records: list[SalaryMarketRawRecordPayload]
+
+
+class SalaryMarketRefreshPayload(BaseModel):
+    min_samples: int = 2
 
 
 class UpsertInterviewSchedulePayload(BaseModel):
@@ -194,6 +219,12 @@ class PositionPayload(BaseModel):
 
 class DeleteCandidatesPayload(BaseModel):
     candidate_ids: list[str]
+
+
+class CandidateSalaryProfilePatchPayload(BaseModel):
+    offer_salary: float | None = None
+    offer_status: str | None = None
+    notes: str | None = None
 
 
 class CompanySettingsPatchPayload(BaseModel):
