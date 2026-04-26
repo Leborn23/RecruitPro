@@ -171,7 +171,7 @@ class _FakeDB:
     def __init__(self, tables: dict[str, list[dict[str, object]]]) -> None:
         self._client = _FakeClient(tables)
 
-    def get_client(self) -> _FakeClient:
+    def get_client(self, user_token: str | None = None) -> _FakeClient:
         return self._client
 
     @staticmethod
