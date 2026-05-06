@@ -629,9 +629,10 @@ export default function InterviewRoom() {
   const hasOpenPrompt = Boolean(activePromptMessage);
   const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal && !hasOpenPrompt;
   const isOvertime = timerView.state === 'overtime';
+  const proctoringRunning = proctoring.status === 'ready' || proctoring.status === 'warning';
   const proctoringReady = proctoring.status === 'ready';
   const proctoringRequesting = proctoring.status === 'requesting';
-  const proctoringStartDisabled = !proctoring.consented || proctoringRequesting || proctoringReady;
+  const proctoringStartDisabled = !proctoring.consented || proctoringRequesting || proctoringRunning;
   const ProctoringStatusIcon = proctoringReady
     ? ShieldCheck
     : proctoring.status === 'blocked' || proctoring.status === 'error'
@@ -936,17 +937,36 @@ export default function InterviewRoom() {
                     className="inline-flex items-center justify-center gap-2 rounded-md bg-white border border-[#c7daf6] px-4 py-2.5 text-sm font-semibold text-[#355b87] hover:bg-[#eef5ff] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <Camera className="w-4 h-4" />
-                    {proctoringRequesting ? '正在打开摄像头...' : proctoringReady ? '摄像头已就绪' : '打开摄像头'}
+                    {proctoringRequesting ? '正在打开摄像头...' : proctoringRunning ? '摄像头已就绪' : '打开摄像头'}
                   </button>
                 </div>
 
-                <div className="overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                <div className="relative overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
                   <video
                     ref={proctoring.videoRef}
                     muted
                     playsInline
-                    className="h-full w-full object-cover"
+                    className="h-full w-full object-fill"
                   />
+                  {proctoring.faceBox ? (
+                    <div
+                      className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
+                      style={{
+                        left: `${proctoring.faceBox.x * 100}%`,
+                        top: `${proctoring.faceBox.y * 100}%`,
+                        width: `${proctoring.faceBox.width * 100}%`,
+                        height: `${proctoring.faceBox.height * 100}%`,
+                      }}
+                    >
+                      <span className={`absolute -top-7 left-0 rounded px-2 py-1 text-[11px] font-semibold text-white ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                        {proctoring.faceBox.label}
+                      </span>
+                    </div>
+                  ) : proctoringRunning ? (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-xs font-semibold text-white">
+                      未检测到人脸框
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1094,13 +1114,32 @@ export default function InterviewRoom() {
                       <span className="truncate">{proctoring.statusText}</span>
                     </span>
                   </div>
-                  <div className="w-full overflow-hidden rounded-lg border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                  <div className="relative w-full overflow-hidden rounded-lg border border-[#c7daf6] bg-[#0f172a] aspect-video">
                     <video
                       ref={proctoring.videoRef}
                       muted
                       playsInline
-                      className="h-full w-full object-cover"
+                      className="h-full w-full object-fill"
                     />
+                    {proctoring.faceBox ? (
+                      <div
+                        className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
+                        style={{
+                          left: `${proctoring.faceBox.x * 100}%`,
+                          top: `${proctoring.faceBox.y * 100}%`,
+                          width: `${proctoring.faceBox.width * 100}%`,
+                          height: `${proctoring.faceBox.height * 100}%`,
+                        }}
+                      >
+                        <span className={`absolute -top-6 left-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                          {proctoring.faceBox.label}
+                        </span>
+                      </div>
+                    ) : proctoringRunning ? (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-[11px] font-semibold text-white">
+                        未检测到人脸框
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

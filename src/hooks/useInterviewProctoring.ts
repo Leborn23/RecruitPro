@@ -22,11 +22,21 @@ export type UseInterviewProctoringResult = {
   videoRef: RefCallback<HTMLVideoElement>;
   status: InterviewProctoringStatus;
   statusText: string;
+  faceBox: ProctoringFaceBox | null;
   consented: boolean;
   setConsented: Dispatch<SetStateAction<boolean>>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   flushEvents: () => Promise<void>;
+};
+
+export type ProctoringFaceBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  state: 'normal' | 'warning';
+  label: string;
 };
 
 type DetectedFace = {
@@ -53,9 +63,12 @@ type ActiveTimedEvent = {
   startedAt: string;
   startedMs: number;
   metadata: Record<string, unknown>;
+  snapshotPaths: string[];
+  snapshotError?: string;
+  snapshotPromise?: Promise<void>;
 };
 
-const POLL_INTERVAL_MS = 1000;
+const POLL_INTERVAL_MS = 300;
 const IMMEDIATE_EVENT_TYPES = new Set<ProctoringEventType>(['camera_closed', 'window_blur']);
 
 function resolveErrorMessage(error: unknown, fallback: string): string {
@@ -147,13 +160,13 @@ function getOffScreenAttentionMetadata(
   const centerX = (bounds.xMin + bounds.xMax) / 2 / frameWidth;
   const centerY = (bounds.yMin + bounds.yMax) / 2 / frameHeight;
   const areaRatio = (faceWidth * faceHeight) / (frameWidth * frameHeight);
-  const edgeMargin = 0.01;
+  const edgeMargin = 0.08;
   const touchesEdge =
     bounds.xMin / frameWidth <= edgeMargin ||
     bounds.yMin / frameHeight <= edgeMargin ||
     bounds.xMax / frameWidth >= 1 - edgeMargin ||
     bounds.yMax / frameHeight >= 1 - edgeMargin;
-  const tooSmall = areaRatio > 0 && areaRatio < 0.018;
+  const tooSmall = areaRatio > 0 && areaRatio < 0.035;
 
   return {
     offScreen: touchesEdge || tooSmall,
@@ -189,6 +202,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const consentedRef = useRef(false);
   const [status, setStatus] = useState<InterviewProctoringStatus>('idle');
   const [statusText, setStatusText] = useState('摄像头监考未开启');
+  const [faceBox, setFaceBox] = useState<ProctoringFaceBox | null>(null);
   const [consented, setConsented] = useState(false);
 
   const attachStreamToVideo = useCallback((node: HTMLVideoElement | null): void => {
@@ -245,6 +259,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       startedAt: new Date(timestampMs).toISOString(),
       startedMs: timestampMs,
       metadata,
+      snapshotPaths: [],
     });
   }
 
@@ -305,12 +320,13 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     const endedAt = new Date(timestampMs).toISOString();
     const eventMetadata: Record<string, unknown> = { ...active.metadata, ...metadata };
-    let snapshotPaths: string[] = [];
+    if (active.snapshotPromise) {
+      await active.snapshotPromise;
+    }
 
-    try {
-      snapshotPaths = await captureSnapshot(type, timestampMs);
-    } catch (error) {
-      eventMetadata.snapshot_error = resolveErrorMessage(error, 'Snapshot upload failed');
+    const snapshotPaths = active.snapshotPaths;
+    if (active.snapshotError) {
+      eventMetadata.snapshot_error = active.snapshotError;
     }
 
     pendingEventsRef.current.push({
@@ -347,6 +363,17 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   ): Promise<void> | void {
     if (condition) {
       openTimedEvent(type, timestampMs, metadata);
+      const active = activeEventsRef.current.get(type);
+      const durationMs = active ? Math.max(0, timestampMs - active.startedMs) : 0;
+      if (active && active.snapshotPaths.length === 0 && !active.snapshotPromise && shouldCommitTimedEvent(type, durationMs)) {
+        active.snapshotPromise = captureSnapshot(type, timestampMs)
+          .then((paths) => {
+            active.snapshotPaths = paths;
+          })
+          .catch((error) => {
+            active.snapshotError = resolveErrorMessage(error, 'Snapshot upload failed');
+          });
+      }
       return;
     }
 
@@ -366,6 +393,21 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
   function refreshReadyStatus(timestampMs: number): void {
     if (stoppedRef.current) return;
+
+    if (activeEventsRef.current.has('no_face')) {
+      setRuntimeStatus('warning', '未检测到人脸');
+      return;
+    }
+
+    if (activeEventsRef.current.has('multiple_faces')) {
+      setRuntimeStatus('warning', '检测到多人入镜');
+      return;
+    }
+
+    if (activeEventsRef.current.has('off_screen_attention')) {
+      setRuntimeStatus('warning', '人脸不完整或离开画面');
+      return;
+    }
 
     if (hasThresholdWarning(timestampMs)) {
       setRuntimeStatus('warning', '请保持面部在摄像头画面内');
@@ -485,6 +527,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     cleanupDetector();
     setRuntimeStatus('idle', '摄像头监考未开启');
+    setFaceBox(null);
 
     if (shouldFlush) {
       await flushEvents();
@@ -510,6 +553,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       videoElementRef.current.srcObject = null;
     }
 
+    setFaceBox(null);
     await flushEvents();
   }
 
@@ -531,9 +575,24 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       }
 
       const faces = await detector.estimateFaces(video, { flipHorizontal: false });
+      const attention = getOffScreenAttentionMetadata(faces.length === 1 ? faces[0] : undefined, video.videoWidth, video.videoHeight);
+      const bounds = faces.length === 1 ? readFaceBounds(faces[0]) : null;
+      if (bounds) {
+        const faceWidth = bounds.xMax - bounds.xMin;
+        const faceHeight = bounds.yMax - bounds.yMin;
+        setFaceBox({
+          x: bounds.xMin / video.videoWidth,
+          y: bounds.yMin / video.videoHeight,
+          width: faceWidth / video.videoWidth,
+          height: faceHeight / video.videoHeight,
+          state: attention.offScreen ? 'warning' : 'normal',
+          label: attention.offScreen ? '人脸不完整' : '人脸已锁定',
+        });
+      } else {
+        setFaceBox(null);
+      }
       await trackTimedCondition('no_face', faces.length === 0, nowMs, { face_count: faces.length });
       await trackTimedCondition('multiple_faces', faces.length > 1, nowMs, { face_count: faces.length });
-      const attention = getOffScreenAttentionMetadata(faces.length === 1 ? faces[0] : undefined, video.videoWidth, video.videoHeight);
       await trackTimedCondition('off_screen_attention', faces.length === 1 && attention.offScreen, nowMs, {
         face_count: faces.length,
         ...attention.metadata,
@@ -543,6 +602,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       if (!stoppedRef.current) {
         setRuntimeStatus('error', resolveErrorMessage(error, '人脸检测失败'));
       }
+      setFaceBox(null);
     } finally {
       pollingRef.current = false;
     }
@@ -786,6 +846,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     videoRef: attachStreamToVideo,
     status,
     statusText,
+    faceBox,
     consented,
     setConsented,
     start,

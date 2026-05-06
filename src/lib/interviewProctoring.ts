@@ -48,9 +48,9 @@ type ProctoringSummary = {
 const PROCTORING_BUCKET = 'interview-proctoring';
 
 const TIMED_EVENT_THRESHOLDS_MS: Partial<Record<ProctoringEventType, number>> = {
-  no_face: 5000,
-  multiple_faces: 3000,
-  off_screen_attention: 8000,
+  no_face: 800,
+  multiple_faces: 800,
+  off_screen_attention: 1000,
   page_hidden: 10000,
 };
 

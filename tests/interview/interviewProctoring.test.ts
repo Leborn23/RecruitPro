@@ -16,11 +16,12 @@ assert.equal(deriveProctoringSeverity('off_screen_attention', 9000), 'medium');
 assert.equal(deriveProctoringSeverity('page_hidden', 12000), 'medium');
 assert.equal(deriveProctoringSeverity('window_blur', 0), 'low');
 
-assert.equal(shouldOpenTimedEvent('no_face', 4999), false);
-assert.equal(shouldOpenTimedEvent('no_face', 5000), true);
-assert.equal(shouldOpenTimedEvent('multiple_faces', 2999), false);
-assert.equal(shouldOpenTimedEvent('multiple_faces', 3000), true);
-assert.equal(shouldOpenTimedEvent('off_screen_attention', 8000), true);
+assert.equal(shouldOpenTimedEvent('no_face', 799), false);
+assert.equal(shouldOpenTimedEvent('no_face', 800), true);
+assert.equal(shouldOpenTimedEvent('multiple_faces', 799), false);
+assert.equal(shouldOpenTimedEvent('multiple_faces', 800), true);
+assert.equal(shouldOpenTimedEvent('off_screen_attention', 999), false);
+assert.equal(shouldOpenTimedEvent('off_screen_attention', 1000), true);
 assert.equal(shouldOpenTimedEvent('page_hidden', 10000), true);
 
 assert.equal(resolveTimedEventSession(null, 'session-1'), null);
