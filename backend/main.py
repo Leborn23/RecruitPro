@@ -4515,15 +4515,14 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
             raise HTTPException(status_code=502, detail="Agent did not return a final report after review approval")
 
     if not isinstance(final_report, dict):
-        if agent_response_status == "error":
-            turns = db.many(
-                client.table("interview_turns")
-                .select("id,turn_no,speaker,content,metadata")
-                .eq("session_id", payload.sessionId)
-                .order("turn_no")
-                .execute()
-            )
-            final_report = build_recovered_report_from_turns(turns)
+        turns = db.many(
+            client.table("interview_turns")
+            .select("id,turn_no,speaker,content,metadata")
+            .eq("session_id", payload.sessionId)
+            .order("turn_no")
+            .execute()
+        )
+        final_report = build_recovered_report_from_turns(turns)
         if not isinstance(final_report, dict):
             raise HTTPException(status_code=502, detail="Agent did not return a final report for scoring")
     mapped = map_agent_report_to_interview_report(final_report)
