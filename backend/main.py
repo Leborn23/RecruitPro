@@ -35,6 +35,8 @@ from models import (
     PersistPhase1Payload,
     PositionPayload,
     PrepareInterviewPayload,
+    ProctoringEventPayload,
+    RecordProctoringEventsPayload,
     ResolveJobRequirementPayload,
     RoomPasswordPayload,
     SalaryMarketImportPayload,
@@ -49,6 +51,17 @@ from models import (
     UpsertInterviewReportPayload,
     UpsertInterviewSchedulePayload,
 )
+
+PROCTORING_EVENT_TYPES = {
+    "multiple_faces",
+    "no_face",
+    "face_missing",
+    "looking_away",
+    "tab_switch",
+    "audio_anomaly",
+    "network_issue",
+}
+PROCTORING_SEVERITIES = {"low", "medium", "high"}
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
@@ -4033,6 +4046,73 @@ def finish_interview(payload: FinishInterviewPayload, authorization: str | None 
         "status": "scoring",
         "candidate_turns": candidate_turns,
         "ai_turns": ai_turns,
+    }
+
+
+def normalize_proctoring_event(
+    event: ProctoringEventPayload,
+    interview_id: str,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    event_type = normalize_text(event.eventType)
+    if event_type not in PROCTORING_EVENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid proctoring event type")
+
+    severity = normalize_text(event.severity)
+    if severity not in PROCTORING_SEVERITIES:
+        raise HTTPException(status_code=400, detail="Invalid proctoring event severity")
+
+    snapshot_paths = [normalize_text(path) for path in event.snapshotPaths if normalize_text(path)][:3]
+    return {
+        "interview_id": interview_id,
+        "session_id": session_id,
+        "event_type": event_type,
+        "severity": severity,
+        "confidence": max(0.0, min(1.0, to_number(event.confidence, 0.5))),
+        "started_at": event.startedAt,
+        "ended_at": event.endedAt,
+        "duration_ms": max(0, int(to_number(event.durationMs, 0))),
+        "snapshot_paths": snapshot_paths,
+        "metadata": event.metadata or {},
+        "created_by": user_id,
+    }
+
+
+@app.post("/api/interviews/proctoring-events")
+def record_proctoring_events(
+    payload: RecordProctoringEventsPayload,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    user = require_user(authorization)
+    client = db.get_client()
+
+    session = db.first(
+        client.table("interview_sessions")
+        .select("id,interview_id")
+        .eq("id", payload.sessionId)
+        .limit(1)
+        .execute()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if str(session.get("interview_id")) != payload.interviewId:
+        raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    rows = [
+        normalize_proctoring_event(event, payload.interviewId, payload.sessionId, user["id"])
+        for event in payload.events[:20]
+    ]
+    inserted_count = 0
+    if rows:
+        inserted = db.many(client.table("interview_proctoring_events").insert(rows).execute())
+        inserted_count = len(inserted)
+
+    return {
+        "ok": True,
+        "interview_id": payload.interviewId,
+        "session_id": payload.sessionId,
+        "inserted_count": inserted_count,
     }
 
 

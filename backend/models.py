@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PrepareInterviewPayload(BaseModel):
@@ -34,6 +34,23 @@ class FinishInterviewPayload(BaseModel):
 class ScoreInterviewPayload(BaseModel):
     interviewId: str
     sessionId: str
+
+
+class ProctoringEventPayload(BaseModel):
+    eventType: str
+    severity: str
+    confidence: float = 0.5
+    startedAt: str
+    endedAt: str | None = None
+    durationMs: int = 0
+    snapshotPaths: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] | None = None
+
+
+class RecordProctoringEventsPayload(BaseModel):
+    interviewId: str
+    sessionId: str
+    events: list[ProctoringEventPayload] = Field(default_factory=list)
 
 
 class HumanConfirmPayload(BaseModel):
