@@ -55,6 +55,7 @@ const summary = summarizeProctoringEvents(events);
 assert.equal(summary.eventCount, 2);
 assert.equal(summary.highCount, 1);
 assert.equal(summary.mediumCount, 1);
+assert.equal(summary.lowCount, 0);
 assert.equal(summary.riskScore, 45);
 assert.match(summary.summaryText, /多人入镜/);
 assert.match(summary.summaryText, /页面离开/);
