@@ -11,10 +11,9 @@
     "test:interview": "node -e \"const { readdirSync } = require('node:fs'); const { spawnSync } = require('node:child_process'); const cli = require.resolve('tsx/cli'); const args = process.argv.slice(1); const files = args.length > 0 ? args : readdirSync('tests/interview').filter((name) => name.endsWith('.test.ts')).sort().map((name) => 'tests/interview/' + name); for (const file of files) { const result = spawnSync(process.execPath, [cli, file], { stdio: 'inherit' }); if (result.status !== 0) process.exit(result.status ?? 1); }\""
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.35",
     "@supabase/supabase-js": "^2.100.1",
     "@tailwindcss/vite": "^4.2.2",
-    "@tensorflow-models/face-detection": "^1.0.3",
-    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
     "lucide-react": "^1.7.0",
     "mammoth": "^1.12.0",
     "pdfjs-dist": "^5.6.205",

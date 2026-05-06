@@ -32,6 +32,7 @@ export type UseInterviewProctoringResult = {
 type DetectedFace = {
   box?: unknown;
   keypoints?: unknown[];
+  score?: number;
 };
 
 type FaceBounds = {
@@ -161,6 +162,7 @@ function getOffScreenAttentionMetadata(
       face_center_x: Number(centerX.toFixed(3)),
       face_center_y: Number(centerY.toFixed(3)),
       face_area_ratio: Number(areaRatio.toFixed(3)),
+      face_score: typeof face.score === 'number' ? Number(face.score.toFixed(3)) : null,
     },
   };
 }
@@ -614,13 +616,45 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function createDetector(): Promise<Detector> {
-    await import('@tensorflow/tfjs-backend-webgl');
-    const tfjsDetector = await import('@tensorflow-models/face-detection/dist/tfjs/detector.js');
-
-    return tfjsDetector.load({
-      runtime: 'tfjs',
-      maxFaces: 3,
+    const { FaceDetector, FilesetResolver } = await import('@mediapipe/tasks-vision');
+    const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm');
+    const detector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath:
+          'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite',
+      },
+      runningMode: 'VIDEO',
+      minDetectionConfidence: 0.5,
+      minSuppressionThreshold: 0.3,
     });
+
+    return {
+      async estimateFaces(video: HTMLVideoElement) {
+        const result = detector.detectForVideo(video, performance.now());
+        return result.detections.map((detection) => {
+          const box = detection.boundingBox;
+          const score = detection.categories[0]?.score;
+          return {
+            box: box
+              ? {
+                  xMin: box.originX,
+                  yMin: box.originY,
+                  xMax: box.originX + box.width,
+                  yMax: box.originY + box.height,
+                  width: box.width,
+                  height: box.height,
+                }
+              : undefined,
+            keypoints: detection.keypoints,
+            score,
+          };
+        });
+      },
+      reset() {},
+      dispose() {
+        detector.close();
+      },
+    };
   }
 
   async function start(): Promise<void> {
