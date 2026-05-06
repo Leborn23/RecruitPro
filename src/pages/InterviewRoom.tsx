@@ -1000,14 +1000,15 @@ export default function InterviewRoom() {
                         width: `${proctoring.faceBox.width * 100}%`,
                         height: `${proctoring.faceBox.height * 100}%`,
                       }}
-                    >
-                      <span className={`absolute -top-7 left-0 rounded px-2 py-1 text-[11px] font-semibold text-white ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                        {proctoring.faceBox.label}
-                      </span>
-                    </div>
+                    />
                   ) : proctoringRunning ? (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-xs font-semibold text-white">
                       未检测到人脸框
+                    </div>
+                  ) : null}
+                  {proctoring.faceBox ? (
+                    <div className={`absolute bottom-2 left-2 rounded px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                      {proctoring.faceBox.label}
                     </div>
                   ) : null}
                 </div>
@@ -1173,14 +1174,15 @@ export default function InterviewRoom() {
                           width: `${proctoring.faceBox.width * 100}%`,
                           height: `${proctoring.faceBox.height * 100}%`,
                         }}
-                      >
-                        <span className={`absolute -top-6 left-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                          {proctoring.faceBox.label}
-                        </span>
-                      </div>
+                      />
                     ) : proctoringRunning ? (
                       <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-[11px] font-semibold text-white">
                         未检测到人脸框
+                      </div>
+                    ) : null}
+                    {proctoring.faceBox ? (
+                      <div className={`absolute bottom-1.5 left-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                        {proctoring.faceBox.label}
                       </div>
                     ) : null}
                   </div>
