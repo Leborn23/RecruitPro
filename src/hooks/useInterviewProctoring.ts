@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type RefCallba
 import {
   buildSnapshotPath,
   deriveProctoringSeverity,
+  resolveTimedEventSession,
   shouldOpenTimedEvent,
   uploadProctoringSnapshot,
   type ProctoringEventInput,
@@ -40,6 +41,7 @@ type Detector = {
 };
 
 type ActiveTimedEvent = {
+  sessionId: string | null;
   startedAt: string;
   startedMs: number;
   metadata: Record<string, unknown>;
@@ -151,6 +153,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     }
 
     activeEventsRef.current.set(type, {
+      sessionId: sessionIdRef.current,
       startedAt: new Date(timestampMs).toISOString(),
       startedMs: timestampMs,
       metadata,
@@ -203,13 +206,14 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     metadata: Record<string, unknown> = {}
   ): Promise<void> {
     const active = activeEventsRef.current.get(type);
-    const currentSessionId = sessionIdRef.current;
-    if (!active || !currentSessionId) return;
+    if (!active) return;
 
     activeEventsRef.current.delete(type);
 
     const durationMs = Math.max(0, timestampMs - active.startedMs);
     if (!shouldCommitTimedEvent(type, durationMs)) return;
+    const eventSessionId = resolveTimedEventSession(active.sessionId, sessionIdRef.current);
+    if (!eventSessionId) return;
 
     const endedAt = new Date(timestampMs).toISOString();
     const eventMetadata: Record<string, unknown> = { ...active.metadata, ...metadata };
@@ -223,7 +227,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     pendingEventsRef.current.push({
       interview_id: interviewIdRef.current,
-      session_id: currentSessionId,
+      session_id: eventSessionId,
       event_type: type,
       severity: deriveProctoringSeverity(type, durationMs),
       confidence: type === 'no_face' ? null : 1,
@@ -292,6 +296,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function flushEvents(): Promise<void> {
+    await closeActiveTimedEvents(Date.now(), { flushed: true });
+
     if (flushingRef.current) {
       flushAgainRef.current = true;
       return;

@@ -125,8 +125,10 @@ class _FakeClient:
 class _FakeDB:
     def __init__(self, tables: dict[str, list[dict[str, object]]]) -> None:
         self._client = _FakeClient(tables)
+        self.last_user_token: str | None = None
 
     def get_client(self, user_token: str | None = None) -> _FakeClient:
+        self.last_user_token = user_token
         return self._client
 
     @staticmethod
@@ -183,6 +185,7 @@ class InterviewProctoringEventsTest(unittest.TestCase):
         self.assertEqual(inserted["created_by"], "user-1")
         self.assertEqual(inserted["snapshot_paths"], ["/snapshots/a.jpg", "/snapshots/b.jpg", "/snapshots/c.jpg"])
         self.assertEqual(inserted["metadata"], {"face_count": 2})
+        self.assertEqual(fake_db.last_user_token, "token")
 
     def test_record_proctoring_events_rejects_session_interview_mismatch(self) -> None:
         fake_db = _FakeDB(
@@ -356,6 +359,13 @@ class InterviewProctoringEventsTest(unittest.TestCase):
                 for item in report["evidence"]
             )
         )
+        proctoring_evidence = [
+            item
+            for item in report["evidence"]
+            if isinstance(item, dict) and item.get("type") == "proctoring"
+        ][0]
+        self.assertIsInstance(proctoring_evidence.get("summary"), str)
+        self.assertIn("多人", proctoring_evidence["summary"])
 
 
 if __name__ == "__main__":

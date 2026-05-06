@@ -818,10 +818,12 @@ def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]
     mapped["risks"] = risks
 
     evidence = mapped.get("evidence") if isinstance(mapped.get("evidence"), list) else []
+    evidence_summary = "，".join(labels) if labels else message
     evidence.append(
         {
             "type": "proctoring",
-            "summary": summary.get("grouped_summary", []),
+            "summary": evidence_summary,
+            "grouped_summary": summary.get("grouped_summary", []),
             "event_count": event_count,
             "risk_score": risk_score,
             "snapshot_paths": summary.get("snapshot_paths", []),
@@ -862,6 +864,12 @@ class Database:
 
     def get_client(self, user_token: str | None = None) -> Client:
         base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
+        if user_token:
+            anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
+            client = create_client(base_url, anon_key)
+            client.postgrest.auth(user_token)
+            return client
+
         service_role_key = normalize_text(os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
         if service_role_key:
             if self.client is None:
@@ -870,8 +878,6 @@ class Database:
 
         anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
         client = create_client(base_url, anon_key)
-        if user_token:
-            client.postgrest.auth(user_token)
         return client
 
     @staticmethod
@@ -4197,7 +4203,7 @@ def record_proctoring_events(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     user = require_user(authorization)
-    client = db.get_client()
+    client = db.get_client(get_bearer_token(authorization))
 
     session = db.first(
         client.table("interview_sessions")

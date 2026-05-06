@@ -75,6 +75,17 @@ export function shouldOpenTimedEvent(type: ProctoringEventType, durationMs: numb
   return thresholdMs !== undefined && durationMs >= thresholdMs;
 }
 
+export function resolveTimedEventSession(
+  startedSessionId: string | null,
+  currentSessionId: string | null
+): string | null {
+  if (!startedSessionId || startedSessionId !== currentSessionId) {
+    return null;
+  }
+
+  return startedSessionId;
+}
+
 export function deriveProctoringSeverity(
   eventType: ProctoringEventType,
   durationMs: number

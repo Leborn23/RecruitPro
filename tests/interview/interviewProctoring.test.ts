@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildSnapshotPath,
   deriveProctoringSeverity,
+  resolveTimedEventSession,
   shouldOpenTimedEvent,
   summarizeProctoringEvents,
   type ProctoringEventRow,
@@ -21,6 +22,11 @@ assert.equal(shouldOpenTimedEvent('multiple_faces', 2999), false);
 assert.equal(shouldOpenTimedEvent('multiple_faces', 3000), true);
 assert.equal(shouldOpenTimedEvent('off_screen_attention', 8000), true);
 assert.equal(shouldOpenTimedEvent('page_hidden', 10000), true);
+
+assert.equal(resolveTimedEventSession(null, 'session-1'), null);
+assert.equal(resolveTimedEventSession('preview-session', 'session-1'), null);
+assert.equal(resolveTimedEventSession('session-1', null), null);
+assert.equal(resolveTimedEventSession('session-1', 'session-1'), 'session-1');
 
 assert.equal(
   buildSnapshotPath({
