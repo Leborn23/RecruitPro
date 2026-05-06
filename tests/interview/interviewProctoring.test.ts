@@ -7,12 +7,13 @@ import {
   type ProctoringEventRow,
 } from '../../src/lib/interviewProctoring.ts';
 
-assert.equal(deriveProctoringSeverity({ type: 'camera_closed' }), 'high');
-assert.equal(deriveProctoringSeverity({ type: 'multiple_faces' }), 'high');
-assert.equal(deriveProctoringSeverity({ type: 'no_face', durationMs: 5200 }), 'medium');
-assert.equal(deriveProctoringSeverity({ type: 'off_screen_attention', durationMs: 9000 }), 'medium');
-assert.equal(deriveProctoringSeverity({ type: 'page_hidden', durationMs: 12000 }), 'medium');
-assert.equal(deriveProctoringSeverity({ type: 'window_blur' }), 'low');
+assert.equal(deriveProctoringSeverity('camera_denied', 0), 'high');
+assert.equal(deriveProctoringSeverity('camera_closed', 0), 'high');
+assert.equal(deriveProctoringSeverity('multiple_faces', 0), 'high');
+assert.equal(deriveProctoringSeverity('no_face', 5200), 'medium');
+assert.equal(deriveProctoringSeverity('off_screen_attention', 9000), 'medium');
+assert.equal(deriveProctoringSeverity('page_hidden', 12000), 'medium');
+assert.equal(deriveProctoringSeverity('window_blur', 0), 'low');
 
 assert.equal(shouldOpenTimedEvent('no_face', 4999), false);
 assert.equal(shouldOpenTimedEvent('no_face', 5000), true);
@@ -26,7 +27,7 @@ assert.equal(
     interviewId: 'interview-1',
     sessionId: 'session-1',
     eventType: 'multiple_faces',
-    timestamp: '2026-05-06T10:11:12.000Z',
+    timestampMs: new Date('2026-05-06T10:11:12.000Z').getTime(),
   }),
   'interview-1/session-1/multiple_faces-2026-05-06T10-11-12-000Z.webp'
 );
@@ -34,19 +35,29 @@ assert.equal(
 const events: ProctoringEventRow[] = [
   {
     id: 'event-1',
-    interviewId: 'interview-1',
-    sessionId: 'session-1',
-    type: 'multiple_faces',
+    interview_id: 'interview-1',
+    session_id: 'session-1',
+    event_type: 'multiple_faces',
     severity: 'high',
-    occurredAt: '2026-05-06T10:11:12.000Z',
+    confidence: 0.98,
+    started_at: '2026-05-06T10:11:12.000Z',
+    ended_at: null,
+    duration_ms: 3000,
+    snapshot_paths: ['interview-1/session-1/multiple_faces-2026-05-06T10-11-12-000Z.webp'],
+    metadata: {},
   },
   {
     id: 'event-2',
-    interviewId: 'interview-1',
-    sessionId: 'session-1',
-    type: 'page_hidden',
+    interview_id: 'interview-1',
+    session_id: 'session-1',
+    event_type: 'page_hidden',
     severity: 'medium',
-    occurredAt: '2026-05-06T10:12:12.000Z',
+    confidence: 1,
+    started_at: '2026-05-06T10:12:12.000Z',
+    ended_at: '2026-05-06T10:12:22.000Z',
+    duration_ms: 10000,
+    snapshot_paths: [],
+    metadata: { hidden: true },
   },
 ];
 
@@ -56,7 +67,7 @@ assert.equal(summary.eventCount, 2);
 assert.equal(summary.highCount, 1);
 assert.equal(summary.mediumCount, 1);
 assert.equal(summary.lowCount, 0);
-assert.equal(summary.riskScore, 45);
+assert.equal(summary.riskScore, 35);
 assert.match(summary.summaryText, /多人入镜/);
 assert.match(summary.summaryText, /页面离开/);
 
