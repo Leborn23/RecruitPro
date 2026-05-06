@@ -711,6 +711,84 @@ def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[s
     }
 
 
+def is_placeholder_interview_report_summary(value: Any) -> bool:
+    text = normalize_text(value).lower()
+    return "waiting for human confirmation" in text or "waiting to generate" in text
+
+
+def estimate_turn_answer_score(answer: str) -> int:
+    text = normalize_text(answer)
+    if not text:
+        return 20
+    lowered = text.lower()
+    weak_markers = ("不会", "不太会", "不知道", "不了解", "不清楚", "不会答")
+    if any(marker in lowered for marker in weak_markers):
+        return 25
+    length = len(text)
+    if length >= 220:
+        return 78
+    if length >= 120:
+        return 68
+    if length >= 50:
+        return 55
+    return 40
+
+
+def build_recovered_report_from_turns(turns: list[dict[str, Any]]) -> dict[str, Any] | None:
+    evaluations: list[dict[str, Any]] = []
+    ai_prompt: str | None = None
+    ai_kind = ""
+    for turn in turns:
+        speaker = normalize_text(turn.get("speaker"))
+        content = normalize_text(turn.get("content"))
+        metadata = turn.get("metadata") if isinstance(turn.get("metadata"), dict) else {}
+        kind = normalize_text(metadata.get("kind"))
+        if speaker == "ai" and kind in {"question", "followup"} and content and not is_agent_system_error_message(content):
+            ai_prompt = content
+            ai_kind = kind
+            continue
+        if speaker == "candidate" and ai_prompt and content:
+            score = estimate_turn_answer_score(content)
+            dimension_score = max(1, min(10, round(score / 10)))
+            evaluations.append(
+                {
+                    "question": ai_prompt,
+                    "answer": content,
+                    "feedback": "Recovered from persisted interview turns because the agent runtime session was unavailable.",
+                    "dimensions": {
+                        "technical_depth": dimension_score,
+                        "communication_logic": dimension_score,
+                        "problem_solving": dimension_score,
+                    },
+                    "kind": ai_kind,
+                }
+            )
+            ai_prompt = None
+            ai_kind = ""
+
+    if not evaluations:
+        return None
+
+    scores = [
+        float((item.get("dimensions") or {}).get("technical_depth", 0)) * 10
+        for item in evaluations
+        if isinstance(item.get("dimensions"), dict)
+    ]
+    overall_score = clamp(sum(scores) / len(scores)) if scores else 45
+    recommendation = "lean hire" if overall_score >= 60 else "no hire"
+    strengths = [{"claim": "Candidate provided recoverable interview answers."}] if overall_score >= 55 else []
+    weaknesses = []
+    if overall_score < 60:
+        weaknesses.append({"claim": "Answers were brief or lacked sufficient technical detail."})
+    return {
+        "overall_score": overall_score,
+        "hire_recommendation": recommendation,
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "detailed_evaluations": evaluations,
+    }
+
+
 def map_agent_plan_to_question_plan(interview_plan: dict[str, Any] | None) -> list[dict[str, Any]]:
     questions = interview_plan.get("questions") if isinstance(interview_plan, dict) and isinstance(interview_plan.get("questions"), list) else []
     output: list[dict[str, Any]] = []
@@ -1114,6 +1192,51 @@ def is_missing_table_error(error: Exception, table_names: tuple[str, ...]) -> bo
     )
 
 
+def normalize_agent_runtime_response(raw: dict[str, Any]) -> dict[str, Any]:
+    response = raw.get("response") if isinstance(raw.get("response"), dict) else None
+    if response is not None:
+        merged = dict(response)
+        if "state_snapshot" in raw and "state_snapshot" not in merged:
+            merged["state_snapshot"] = raw.get("state_snapshot")
+        return merged
+    return raw
+
+
+def is_agent_session_exists_response(raw: dict[str, Any]) -> bool:
+    message = normalize_text(raw.get("message")).lower()
+    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    metadata_error = normalize_text(metadata.get("error")).lower()
+    status = normalize_text(raw.get("status")).lower()
+    return status == "error" and (
+        "session already exists" in message or "session already exists" in metadata_error
+    )
+
+
+def is_agent_system_error_message(content: Any) -> bool:
+    text = normalize_text(content).lower()
+    return (
+        "session already exists" in text
+        or "agent gateway request failed" in text
+        or "session not found" in text
+        or "not waiting for a candidate answer" in text
+    )
+
+
+def resolve_configured_interview_question_count(client: Any, fallback: int | None = None) -> int | None:
+    settings = db.first(
+        client.table("company_settings")
+        .select("interview_question_count")
+        .limit(1)
+        .execute()
+    )
+    raw_value = settings.get("interview_question_count") if settings else fallback
+    try:
+        count = int(raw_value)
+    except (TypeError, ValueError):
+        return fallback
+    return count if count > 0 else fallback
+
+
 def require_super_admin_user(authorization: str | None) -> dict[str, Any]:
     user = require_user(authorization)
     client = db.get_client()
@@ -1131,7 +1254,7 @@ def agent_fetch(path: str, payload: dict[str, Any] | None = None, method: str = 
     if shared_secret:
         headers["x-agent-secret"] = shared_secret
     timeout = float(os.getenv("AGENT_TIMEOUT_MS", "20000")) / 1000
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=timeout, trust_env=False) as client:
         response = client.request(method, f"{base_url}{path}", headers=headers, json=payload)
     if response.status_code >= 400:
         detail = ""
@@ -3664,8 +3787,12 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
 
     candidate_light = {**candidate, "resume_skills": resume_skills, "resume_projects": resume_projects, "resume_work_items": resume_work_items}
     question_plan = build_question_plan(candidate_light, position)
-    if isinstance(payload.questionCount, int) and payload.questionCount > 0:
-        question_plan = question_plan[: payload.questionCount]
+    requested_question_count = resolve_configured_interview_question_count(
+        client,
+        payload.questionCount if isinstance(payload.questionCount, int) and payload.questionCount > 0 else None,
+    )
+    if requested_question_count:
+        question_plan = question_plan[:requested_question_count]
     skills = extract_skills_from_requirement(position.get("technical_requirements"))
     context_payload = {
         "candidate": {
@@ -3685,21 +3812,27 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
             "min_edu": position.get("min_edu"),
         },
         "skills": skills,
-        "rubric_version": "v2-core-and-personalized",
-        "prepared_by": user["id"],
-        "prepared_at": now_iso(),
-    }
+            "rubric_version": "v2-core-and-personalized",
+            "question_count": len(question_plan),
+            "prepared_by": user["id"],
+            "prepared_at": now_iso(),
+        }
 
     existing_session = db.first(
         client.table("interview_sessions")
-        .select("id,status")
+        .select("id,status,question_plan")
         .eq("interview_id", payload.interviewId)
         .order("created_at", desc=True)
         .limit(1)
         .execute()
     )
 
-    if existing_session and normalize_text(existing_session.get("status")) in {"preparing", "ready", "running", "scoring"}:
+    existing_status = normalize_text(existing_session.get("status")) if existing_session else ""
+    preserve_active_session = existing_session and existing_status in {"running", "scoring"}
+    if preserve_active_session:
+        session_id = str(existing_session["id"])
+        question_plan = existing_session.get("question_plan") if isinstance(existing_session.get("question_plan"), list) else question_plan
+    elif existing_session and existing_status in {"preparing", "ready"}:
         client.table("interview_sessions").update(
             {
                 "candidate_id": payload.candidateId,
@@ -3723,6 +3856,7 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
                     "status": "ready",
                     "question_plan": question_plan,
                     "context_payload": context_payload,
+                    "created_by": user["id"],
                 }
             )
             .execute()
@@ -3731,14 +3865,15 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
             raise HTTPException(status_code=500, detail="Create session failed")
         session_id = str(inserted["id"])
 
-    client.table("upcoming_interviews").update(
-        {
-            "candidate_id": payload.candidateId,
-            "status": "ready",
-            "session_id": session_id,
-            "updated_by": user["id"],
-        }
-    ).eq("id", payload.interviewId).execute()
+    if not preserve_active_session:
+        client.table("upcoming_interviews").update(
+            {
+                "candidate_id": payload.candidateId,
+                "status": "ready",
+                "session_id": session_id,
+                "updated_by": user["id"],
+            }
+        ).eq("id", payload.interviewId).execute()
 
     return {
         "ok": True,
@@ -3808,18 +3943,49 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
         .execute()
     )
 
-    agent_response = agent_fetch(
-        "/agent/start",
-        {
-            "session_id": payload.sessionId,
-            "resume_text": build_resume_text(candidate, profile, projects),
-            "jd_text": build_job_description_text(position, parsed_requirement),
-            "candidate_profile": map_resume_context_to_candidate_profile(candidate, profile, projects),
-            "job_profile": map_job_context_to_job_profile(position, parsed_requirement),
-        },
+    session_question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
+    requested_question_count = resolve_configured_interview_question_count(
+        client,
+        len(session_question_plan) if len(session_question_plan) > 0 else None,
     )
 
+    try:
+        agent_response = normalize_agent_runtime_response(agent_fetch(
+            "/agent/start",
+            {
+                "session_id": payload.sessionId,
+                "resume_text": build_resume_text(candidate, profile, projects),
+                "jd_text": build_job_description_text(position, parsed_requirement),
+                "candidate_profile": map_resume_context_to_candidate_profile(candidate, profile, projects),
+                "job_profile": map_job_context_to_job_profile(position, parsed_requirement),
+                "question_count": requested_question_count,
+            },
+        ))
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        try:
+            agent_response = normalize_agent_runtime_response(
+                agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET")
+            )
+        except HTTPException:
+            raise exc
+        recovered_status = normalize_text(agent_response.get("status")).lower()
+        recovered_message = normalize_text(agent_response.get("message"))
+        if recovered_status in {"error", ""} or is_agent_system_error_message(recovered_message):
+            raise exc
+    if is_agent_session_exists_response(agent_response):
+        agent_response = normalize_agent_runtime_response(
+            agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET")
+        )
+    if normalize_text(agent_response.get("status")).lower() == "error":
+        raise HTTPException(status_code=502, detail=normalize_text(agent_response.get("message")) or "Agent start failed")
+
     mapped_plan = map_agent_plan_to_question_plan(agent_response.get("interview_plan"))
+    opening_message = normalize_text(agent_response.get("message"))
+    if not mapped_plan or is_agent_system_error_message(opening_message):
+        detail = opening_message if is_agent_system_error_message(opening_message) else "Agent did not return an interview question plan."
+        raise HTTPException(status_code=502, detail=detail)
     now = now_iso()
     client.table("interview_sessions").update(
         {
@@ -3841,12 +4007,23 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
         }
     ).eq("id", payload.interviewId).execute()
 
-    existing_ai_turn = db.first(
-        client.table("interview_turns").select("id").eq("session_id", payload.sessionId).eq("speaker", "ai").limit(1).execute()
+    existing_ai_turns = db.many(
+        client.table("interview_turns")
+        .select("id,content,metadata")
+        .eq("session_id", payload.sessionId)
+        .eq("speaker", "ai")
+        .execute()
     )
-    opening_message = normalize_text(agent_response.get("message"))
-    first_question = None
-    if not existing_ai_turn and opening_message:
+    reusable_ai_turn = next(
+        (
+            turn
+            for turn in existing_ai_turns
+            if normalize_text(turn.get("content")) and not is_agent_system_error_message(turn.get("content"))
+        ),
+        None,
+    )
+    first_question = normalize_text(reusable_ai_turn.get("content")) if reusable_ai_turn else None
+    if not reusable_ai_turn and opening_message and not is_agent_system_error_message(opening_message):
         first_planned_question = ((agent_response.get("interview_plan") or {}).get("questions") or [{}])[0]
         client.table("interview_turns").insert(
             {
@@ -3863,6 +4040,7 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
                     "source": "agent",
                     "step": 1,
                 },
+                "created_by": user["id"],
             }
         ).execute()
         first_question = opening_message
@@ -3880,7 +4058,7 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
 
 @app.post("/api/interviews/turn")
 def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    require_user(authorization)
+    user = require_user(authorization)
     client = db.get_client()
 
     session = db.first(
@@ -3900,24 +4078,9 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
             {"status": "running", "started_at": session.get("started_at") or now_iso()}
         ).eq("id", payload.sessionId).execute()
 
-    inserted_turn = db.first(
-        client.table("interview_turns")
-        .insert(
-            {
-                "session_id": payload.sessionId,
-                "turn_no": next_turn_no(payload.sessionId),
-                "speaker": payload.speaker,
-                "content": payload.content.strip(),
-                "input_mode": payload.inputMode,
-                "metadata": payload.metadata or {},
-            }
-        )
-        .execute()
-    )
-    if not inserted_turn:
-        raise HTTPException(status_code=500, detail="Insert turn failed")
-
     ai_reply = None
+    agent_response = None
+    asked_question_count = 0
     if payload.speaker == "candidate":
         all_turns = db.many(
             client.table("interview_turns")
@@ -3936,16 +4099,45 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
             ]
         )
 
-        agent_response = agent_fetch(
+        agent_response = normalize_agent_runtime_response(agent_fetch(
             "/agent/answer",
             {
                 "session_id": payload.sessionId,
                 "user_answer": payload.content.strip(),
             },
+        ))
+        agent_status = normalize_text(agent_response.get("status")).lower()
+        agent_message = normalize_text(agent_response.get("message"))
+        if agent_status == "error" or is_agent_system_error_message(agent_message):
+            detail = normalize_text(agent_response.get("message"))
+            metadata = agent_response.get("metadata") if isinstance(agent_response.get("metadata"), dict) else {}
+            detail = detail or normalize_text(metadata.get("error")) or "Agent rejected the candidate answer."
+            raise HTTPException(status_code=409, detail=detail)
+
+    inserted_turn = db.first(
+        client.table("interview_turns")
+        .insert(
+            {
+                "session_id": payload.sessionId,
+                "turn_no": next_turn_no(payload.sessionId),
+                "speaker": payload.speaker,
+                "content": payload.content.strip(),
+                "input_mode": payload.inputMode,
+                "metadata": payload.metadata or {},
+                "created_by": user["id"],
+            }
         )
+        .execute()
+    )
+    if not inserted_turn:
+        raise HTTPException(status_code=500, detail="Insert turn failed")
+
+    if payload.speaker == "candidate" and agent_response is not None:
         current_asked_count = int(((agent_response.get("state_snapshot") or {}).get("asked_question_count") or asked_question_count))
         agent_status = normalize_text(agent_response.get("status")).lower()
         ai_prompt = normalize_text(agent_response.get("message"))
+        if is_agent_system_error_message(ai_prompt):
+            raise HTTPException(status_code=409, detail=ai_prompt)
         ai_kind = "question" if current_asked_count > asked_question_count else "followup"
         if agent_status in {"wait_for_review", "finish"}:
             ai_prompt = ai_prompt or "The structured interview is complete. Scoring will start next."
@@ -3977,6 +4169,7 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
                             "next_nodes": ((agent_response.get("state_snapshot") or {}).get("next_nodes") or []),
                             "answer_guidance": answer_guidance,
                         },
+                        "created_by": user["id"],
                     }
                 )
                 .execute()
@@ -4011,6 +4204,44 @@ def finish_interview(payload: FinishInterviewPayload, authorization: str | None 
         raise HTTPException(status_code=404, detail="Session not found")
     if str(session.get("interview_id")) != payload.interviewId:
         raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    agent_status = normalize_agent_runtime_response(agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET"))
+    state_snapshot = agent_status.get("state_snapshot") if isinstance(agent_status.get("state_snapshot"), dict) else {}
+    next_nodes = state_snapshot.get("next_nodes") if isinstance(state_snapshot.get("next_nodes"), list) else []
+    agent_response_status = normalize_text(agent_status.get("status")).lower()
+    if agent_response_status == "ask" and "evaluate_answer" in next_nodes:
+        turns = db.many(
+            client.table("interview_turns")
+            .select("id,turn_no,speaker,content,metadata")
+            .eq("session_id", payload.sessionId)
+            .order("turn_no")
+            .execute()
+        )
+        last_ai_index = max((idx for idx, turn in enumerate(turns) if turn.get("speaker") == "ai"), default=-1)
+        candidate_after_prompt = next(
+            (
+                turn
+                for turn in reversed(turns[last_ai_index + 1 :])
+                if turn.get("speaker") == "candidate" and normalize_text(turn.get("content"))
+            ),
+            None,
+        )
+        if not candidate_after_prompt:
+            raise HTTPException(status_code=409, detail="Current question is waiting for a candidate answer.")
+        recovered_response = normalize_agent_runtime_response(
+            agent_fetch(
+                "/agent/answer",
+                {
+                    "session_id": payload.sessionId,
+                    "user_answer": normalize_text(candidate_after_prompt.get("content")),
+                },
+            )
+        )
+        recovered_state = recovered_response.get("state_snapshot") if isinstance(recovered_response.get("state_snapshot"), dict) else {}
+        recovered_next_nodes = recovered_state.get("next_nodes") if isinstance(recovered_state.get("next_nodes"), list) else []
+        recovered_status = normalize_text(recovered_response.get("status")).lower()
+        if recovered_status == "ask" and "evaluate_answer" in recovered_next_nodes:
+            raise HTTPException(status_code=409, detail="Agent is still processing the latest answer. Please retry submit after it finishes.")
 
     now = now_iso()
     client.table("interview_sessions").update({"status": "scoring", "ended_at": now}).eq("id", payload.sessionId).execute()
@@ -4052,37 +4283,33 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
     agent_status = agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET")
     response_payload = agent_status.get("response") if isinstance(agent_status.get("response"), dict) else {}
     final_report = response_payload.get("final_report") if isinstance(response_payload, dict) else None
+    agent_response_status = normalize_text(response_payload.get("status")).lower() if isinstance(response_payload, dict) else ""
+
+    if not isinstance(final_report, dict) and agent_response_status == "wait_for_review":
+        reviewed_response = agent_fetch(
+            "/agent/review",
+            {
+                "session_id": payload.sessionId,
+                "approved": True,
+                "comments": "Auto-approved by RecruitPro scoring flow.",
+            },
+        )
+        final_report = reviewed_response.get("final_report") if isinstance(reviewed_response, dict) else None
+        if not isinstance(final_report, dict):
+            raise HTTPException(status_code=502, detail="Agent did not return a final report after review approval")
 
     if not isinstance(final_report, dict):
-        pending_report = db.first(
-            client.table("interview_reports")
-            .upsert(
-                {
-                    "session_id": payload.sessionId,
-                    "interview_id": payload.interviewId,
-                    "candidate_id": session.get("candidate_id"),
-                    "recommendation": "needs_review",
-                    "summary": "The AI interview is complete and waiting for human confirmation before the final report is generated.",
-                    "evidence": [
-                        {
-                            "agent_status": response_payload.get("status") if isinstance(response_payload, dict) else "unknown",
-                            "state_snapshot": agent_status.get("state_snapshot") or {},
-                        }
-                    ],
-                    "generated_by": user["id"],
-                    "updated_at": now_iso(),
-                },
-                on_conflict="session_id",
+        if agent_response_status == "error":
+            turns = db.many(
+                client.table("interview_turns")
+                .select("id,turn_no,speaker,content,metadata")
+                .eq("session_id", payload.sessionId)
+                .order("turn_no")
+                .execute()
             )
-            .execute()
-        )
-        return {
-            "ok": True,
-            "interview_id": payload.interviewId,
-            "session_id": payload.sessionId,
-            "report": pending_report,
-            "pending_human_review": True,
-        }
+            final_report = build_recovered_report_from_turns(turns)
+        if not isinstance(final_report, dict):
+            raise HTTPException(status_code=502, detail="Agent did not return a final report for scoring")
     mapped = map_agent_report_to_interview_report(final_report)
     report = db.first(
         client.table("interview_reports")

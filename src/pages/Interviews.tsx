@@ -3,7 +3,9 @@ import { supabase } from '../lib/supabase';
 import { fetchInterviewReportByInterview, interviewRuntimeEdge, type InterviewReportRow } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
-import { Calendar, ChevronRight, Clock, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle } from 'lucide-react';
+import { removeInterviewFromLocalState } from '../lib/interviewListState';
+import { normalizeReportText } from '../lib/reportText';
+import { Calendar, ChevronRight, Clock, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle, Maximize2, Minimize2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 type InterviewRow = {
@@ -325,7 +327,7 @@ function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
     overall_score: row.overall_score,
     recommendation: row.recommendation,
     risk_score: row.risk_score,
-    summary: row.summary,
+    summary: normalizeReportText(row.summary),
     dimension_scores: dimensionScores,
     strengths,
     risks,
@@ -358,7 +360,7 @@ function toInsightZh(text: string): string {
 }
 
 function buildReportSummaryZh(report: ScoreReportView): string {
-  const structured = String(report.summary ?? '').trim();
+  const structured = normalizeReportText(report.summary);
   if (structured) return structured;
 
   const overall = report.overall_score ?? '-';
@@ -368,6 +370,24 @@ function buildReportSummaryZh(report: ScoreReportView): string {
   const minRequired = report.min_answer_required ?? '-';
   const recommendation = toRecommendationLabel(report.recommendation);
   return `综合评分 ${overall} 分，${recommendation}。风险评分 ${risk}。有效回答 ${answered}/${total}，最低有效回答要求 ${minRequired}。`;
+}
+
+function buildReportSummaryParagraphs(report: ScoreReportView): string[] {
+  const summary = buildReportSummaryZh(report);
+  if (!summary) return [];
+
+  return summary
+    .split(/\n+/)
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+      if (trimmed.length <= 120) return [trimmed];
+      return trimmed
+        .split(/(?<=[。；;])\s*/)
+        .map((item) => item.trim())
+        .filter((item) => item && !/^[;；。,\s]+$/.test(item));
+    })
+    .filter((item) => item && !/^[;；。,\s]+$/.test(item));
 }
 
 function extractAnsweredProgress(report: ScoreReportView | undefined): string {
@@ -394,16 +414,14 @@ export default function Interviews() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingInterviewId, setDeletingInterviewId] = useState<string | null>(null);
   const [isPrefillFlow, setIsPrefillFlow] = useState(false);
   const [returnToPath, setReturnToPath] = useState<string | null>(null);
   const [runtimeBusyInterviewId, setRuntimeBusyInterviewId] = useState<string | null>(null);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportInterviewName, setReportInterviewName] = useState('');
   const [reportData, setReportData] = useState<ScoreReportView | null>(null);
-  const [reportInterviewId, setReportInterviewId] = useState('');
-  const [reportReviewDecision, setReportReviewDecision] = useState<InterviewReportRow['recommendation']>('hire');
-  const [reportReviewNote, setReportReviewNote] = useState('');
-  const [submittingReportReview, setSubmittingReportReview] = useState(false);
+  const [reportModalFullscreen, setReportModalFullscreen] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [configuredQuestionCount, setConfiguredQuestionCount] = useState(DEFAULT_INTERVIEW_QUESTION_COUNT);
   const [candidateOptions, setCandidateOptions] = useState<CandidateOption[]>([]);
@@ -629,73 +647,18 @@ export default function Interviews() {
   const closeReportModal = () => {
     setReportModalOpen(false);
     setReportInterviewName('');
-    setReportInterviewId('');
     setReportData(null);
-    setReportReviewDecision('hire');
-    setReportReviewNote('');
-    setSubmittingReportReview(false);
+    setReportModalFullscreen(false);
   };
 
   const openReportModal = (interview: InterviewRow, report: ScoreReportView) => {
     setReportInterviewName(interview.name || '候选人');
-    setReportInterviewId(interview.id);
-    setReportData(report);
-    setReportReviewDecision((report.recommendation as InterviewReportRow['recommendation']) ?? 'hire');
-    setReportReviewNote('');
+    setReportData({
+      ...report,
+      summary: normalizeReportText(report.summary)
+    });
+    setReportModalFullscreen(false);
     setReportModalOpen(true);
-  };
-
-  const handleHumanConfirmReport = async (confirmed: boolean) => {
-    let currentReportId = reportData?.id ?? '';
-    if (!currentReportId && reportInterviewId) {
-      try {
-        const freshReport = await fetchInterviewReportByInterview(reportInterviewId);
-        if (freshReport) {
-          const mapped = mapReportRowToView(freshReport);
-          setReportData(mapped);
-          setReportByInterviewId((prev) => ({
-            ...prev,
-            [reportInterviewId]: mapped
-          }));
-          currentReportId = mapped.id ?? '';
-        }
-      } catch {
-        // Keep the original guard below to show a stable message.
-      }
-    }
-
-    if (!currentReportId || !reportInterviewId) {
-      alert('缺少报告上下文，无法提交人工确认');
-      return;
-    }
-
-    setSubmittingReportReview(true);
-    try {
-      const result = await interviewRuntimeEdge.humanConfirm<{ report?: InterviewReportRow }>({
-        interviewId: reportInterviewId,
-        reportId: currentReportId,
-        confirmed,
-        finalRecommendation: reportReviewDecision ?? null,
-        note: reportReviewNote.trim() || null
-      });
-
-      const updatedRaw = result?.report;
-      if (!updatedRaw) {
-        throw new Error('人工确认已提交，但未返回更新后的报告');
-      }
-
-      const mapped = mapReportRowToView(updatedRaw);
-      setReportData(mapped);
-      setReportByInterviewId((prev) => ({
-        ...prev,
-        [reportInterviewId]: mapped
-      }));
-      await fetchInterviews();
-    } catch (error) {
-      alert(`人工确认失败：${toErrorMessage(error, 'unknown error')}`);
-    } finally {
-      setSubmittingReportReview(false);
-    }
   };
 
   const interviewsWithReport = useMemo(
@@ -900,11 +863,21 @@ export default function Interviews() {
   };
 
   const handleDeleteConfirmed = async (id: string) => {
+    const previousInterviews = interviews;
+    const previousReports = reportByInterviewId;
+    const nextState = removeInterviewFromLocalState(previousInterviews, previousReports, id);
+
+    setDeletingInterviewId(id);
+    setConfirmDeleteId(null);
+    setInterviews(nextState.rows);
+    setReportByInterviewId(nextState.reportsByInterviewId);
+    setSelectedInterviewId((current) => (current === id ? nextState.rows[0]?.id ?? null : current));
+
     const { error } = await supabase.from('upcoming_interviews').delete().eq('id', id);
-    if (!error) {
-      await fetchInterviews();
-      setConfirmDeleteId(null);
-    } else {
+    setDeletingInterviewId(null);
+    if (error) {
+      setInterviews(previousInterviews);
+      setReportByInterviewId(previousReports);
       alert(`删除失败：${error.message}`);
     }
   };
@@ -956,7 +929,7 @@ export default function Interviews() {
       });
 
       await fetchInterviews();
-      const report = (scored?.report ?? null) as ScoreReportView | null;
+      const report = scored?.report ? mapReportRowToView(scored.report as InterviewReportRow) : null;
         if (!report) {
           alert('评分完成，但报告内容为空');
           return;
@@ -1357,19 +1330,35 @@ export default function Interviews() {
       )}
 
       {reportModalOpen && reportData && (
-        <div className="fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-surface-container-lowest rounded-xl max-w-2xl w-full shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className={`fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center ${reportModalFullscreen ? 'p-0' : 'p-4'}`}>
+          <div className={`bg-surface-container-lowest w-full shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col ${
+            reportModalFullscreen ? 'h-screen max-h-screen rounded-none' : 'max-w-2xl max-h-[90vh] rounded-xl'
+          }`}>
             <div className="px-6 py-4 border-b border-outline-variant/15 flex justify-between items-center bg-surface-container-low/50">
               <h3 className="font-semibold text-on-surface">AI 评分报告 · {reportInterviewName}</h3>
-              <button
-                onClick={closeReportModal}
-                className="text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-container transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setReportModalFullscreen((current) => !current)}
+                  aria-label={reportModalFullscreen ? '退出全屏' : '全屏查看'}
+                  title={reportModalFullscreen ? '退出全屏' : '全屏查看'}
+                  className="text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-container transition-colors cursor-pointer"
+                >
+                  {reportModalFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeReportModal}
+                  aria-label="关闭报告"
+                  title="关闭报告"
+                  className="text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-container transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+            <div className="p-6 space-y-5 flex-1 min-h-0 overflow-y-auto">
                 <div className="flex flex-wrap items-end gap-3">
                   <div>
                     <p className="text-xs text-on-surface-variant">总分</p>
@@ -1379,15 +1368,6 @@ export default function Interviews() {
                     {toRecommendationLabel(reportData.recommendation)}
                   </span>
                   <span className="text-xs text-on-surface-variant">风险评分: {reportData.risk_score ?? '-'}</span>
-                  <span
-                    className={`text-xs px-2.5 py-1 rounded border ${
-                      reportData.human_confirmed
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                        : 'border-amber-200 bg-amber-50 text-amber-700'
-                    }`}
-                  >
-                    {reportData.human_confirmed ? '已人工确认' : '待人工确认'}
-                  </span>
                 </div>
 
               <div className="grid lg:grid-cols-3 gap-3 text-xs">
@@ -1504,66 +1484,20 @@ export default function Interviews() {
                 )}
               </div>
 
-                <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-xs text-on-surface">
-                  {buildReportSummaryZh(reportData)}
-                </div>
-
-                <div className="rounded border border-outline-variant/20 bg-surface-container-low px-4 py-4 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-semibold text-on-surface">人工确认</h4>
-                      <p className="text-xs text-on-surface-variant">
-                        {reportData.human_confirmed
-                          ? `已确认${reportData.human_confirmed_at ? ` · ${new Date(reportData.human_confirmed_at).toLocaleString()}` : ''}`
-                          : '当前报告可提交人工确认并回写最终建议'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {(['hire', 'hold', 'reject', 'needs_review'] as const).map((decision) => (
-                      <button
-                        key={decision}
-                        type="button"
-                        onClick={() => setReportReviewDecision(decision)}
-                        className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-                          reportReviewDecision === decision
-                            ? 'border-primary/30 bg-primary/10 text-primary'
-                            : 'border-outline-variant/20 bg-surface-container-lowest text-on-surface-variant'
-                        }`}
+                <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3">
+                  <h4 className="text-sm font-semibold text-on-surface mb-2">综合评语</h4>
+                  <div className="space-y-2">
+                    {buildReportSummaryParagraphs(reportData).map((paragraph, index) => (
+                      <p
+                        key={`report-summary-${index}`}
+                        className="text-xs leading-6 text-on-surface-variant whitespace-pre-wrap break-words"
                       >
-                        {toRecommendationLabel(decision)}
-                      </button>
+                        {paragraph}
+                      </p>
                     ))}
                   </div>
-
-                  <textarea
-                    value={reportReviewNote}
-                    onChange={(e) => setReportReviewNote(e.target.value)}
-                    rows={3}
-                    placeholder="填写人工确认备注（可选）"
-                    className="w-full rounded-md border border-outline-variant/20 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface outline-none focus:border-primary"
-                  />
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleHumanConfirmReport(true)}
-                      disabled={submittingReportReview}
-                      className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-white hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {submittingReportReview ? '提交中...' : '确认通过'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleHumanConfirmReport(false)}
-                      disabled={submittingReportReview}
-                      className="rounded-md border border-error/20 bg-error/10 px-3 py-2 text-xs font-medium text-error hover:bg-error/15 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {submittingReportReview ? '提交中...' : '确认驳回'}
-                    </button>
-                  </div>
                 </div>
+
               </div>
             </div>
           </div>
@@ -1769,17 +1703,37 @@ export default function Interviews() {
                         </span>
                       );
                     })()}
-                    <div className="flex gap-2">
-                      <button onClick={(event) => { event.stopPropagation(); openEditModal(interview); }} className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-white hover:text-[#1f5fbf]">
+                      <div className="flex gap-2">
+                      <button
+                        onClick={(event) => { event.stopPropagation(); openEditModal(interview); }}
+                        disabled={deletingInterviewId === interview.id}
+                        className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-white hover:text-[#1f5fbf] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
                         <Pencil className="w-4 h-4" />
                       </button>
                       {confirmDeleteId === interview.id ? (
                         <div className="flex overflow-hidden rounded-xl border border-[#f1d8de] bg-[#fff6f8]">
-                          <button onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(null); }} className="px-2 py-1 text-xs text-[#56718f] transition hover:bg-[#fff1f4]">取消</button>
-                          <button onClick={(event) => { event.stopPropagation(); void handleDeleteConfirmed(interview.id); }} className="px-2 py-1 text-xs font-medium text-[#8e3550] transition hover:bg-[#ffe6ec]">确认</button>
+                          <button
+                            onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(null); }}
+                            disabled={deletingInterviewId === interview.id}
+                            className="px-2 py-1 text-xs text-[#56718f] transition hover:bg-[#fff1f4] disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            取消
+                          </button>
+                          <button
+                            onClick={(event) => { event.stopPropagation(); void handleDeleteConfirmed(interview.id); }}
+                            disabled={deletingInterviewId === interview.id}
+                            className="px-2 py-1 text-xs font-medium text-[#8e3550] transition hover:bg-[#ffe6ec] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {deletingInterviewId === interview.id ? '删除中' : '确认'}
+                          </button>
                         </div>
                       ) : (
-                        <button onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(interview.id); }} className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-[#fff1f4] hover:text-[#8e3550]">
+                        <button
+                          onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(interview.id); }}
+                          disabled={deletingInterviewId === interview.id}
+                          className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-[#fff1f4] hover:text-[#8e3550] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}

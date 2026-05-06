@@ -65,7 +65,7 @@ function createRiskSummary(position: PositionForm) {
 
 function splitHighlights(requirements: string) {
   return requirements
-    .split(/[\n,锛屻€傦紱;]/)
+    .split(/[\n,，。；;]/)
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 5);
@@ -291,7 +291,7 @@ export default function Positions() {
                     className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-[#1f5fbf] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#194f9e]"
                   >
                     <Plus className="h-4 w-4" />
-                    鏂板缓宀椾綅
+                    新建岗位
                   </button>
                 </div>
               </div>
@@ -365,7 +365,7 @@ export default function Positions() {
                           <p className="mt-2 text-xl font-semibold text-[#16355f]">{position.threshold_score}</p>
                         </div>
                         <div className="rounded-[18px] border border-[#dde8f5] bg-white/85 p-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b86a4]">瀛﹀巻闂ㄦ</p>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b86a4]">学历门槛</p>
                           <p className="mt-2 text-base font-semibold text-[#16355f]">{position.min_edu}及以上</p>
                         </div>
                         <div className="rounded-[18px] border border-[#dde8f5] bg-white/85 p-3">
@@ -461,7 +461,7 @@ export default function Positions() {
                   <div className="rounded-[22px] border border-[#f0d8dd] bg-[#fff7f8] p-4">
                     <div className="flex items-center gap-2 text-[#8f3b58]">
                       <AlertTriangle className="h-4 w-4" />
-                      <h4 className="text-sm font-semibold">椋庨櫓鎻愮ず</h4>
+                      <h4 className="text-sm font-semibold">风险提示</h4>
                     </div>
                     <div className="mt-4 space-y-2">
                       {selectedRisks.length > 0 ? (

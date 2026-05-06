@@ -257,16 +257,6 @@ async function clearInvalidSession(): Promise<void> {
   }
 }
 
-async function ensureSignedIn(): Promise<void> {
-  const {
-    data: { session }
-  } = await supabase.auth.getSession();
-
-  if (!session?.access_token) {
-    throw new Error('登录状态已失效，请重新登录后再试');
-  }
-}
-
 function assertRow<T>(data: T | null, error: unknown, fallback: string): T {
   if (error || !data) {
     throw new Error(resolveErrorMessage(error, fallback));
@@ -275,7 +265,50 @@ function assertRow<T>(data: T | null, error: unknown, fallback: string): T {
 }
 
 async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): Promise<TResponse> {
-  await ensureSignedIn();
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error('登录状态已失效，请重新登录后再试');
+  }
+
+  const fastApiBaseUrl = (import.meta.env.VITE_FASTAPI_BASE_URL as string | undefined)?.trim().replace(/\/$/, '');
+  const fastApiRoutes: Record<string, string> = {
+    'interview-prepare': '/api/interviews/prepare',
+    'interview-start': '/api/interviews/start',
+    'interview-turn': '/api/interviews/turn',
+    'interview-finish': '/api/interviews/finish',
+    'interview-score': '/api/interviews/score',
+    'interview-human-confirm': '/api/interviews/human-confirm'
+  };
+
+  const fastApiRoute = fastApiRoutes[fnName];
+  if (fastApiBaseUrl && fastApiRoute) {
+    const response = await fetch(`${fastApiBaseUrl}${fastApiRoute}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await response.text();
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(text);
+      }
+    }
+    if (!response.ok) {
+      const detail =
+        data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
+      throw new Error(detail || `Invoke ${fnName} failed`);
+    }
+    return data as TResponse;
+  }
 
   const invoke = async () => supabase.functions.invoke(fnName, { body: payload });
 

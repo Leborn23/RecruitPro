@@ -4,7 +4,8 @@ import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, Info, Play, Send, 
 import { fetchInterviewReportByInterview, fetchInterviewTurns, interviewRuntimeEdge } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
-import { deriveInterviewClockView, deriveInterviewQuestionMetrics } from '../lib/interviewRoomState';
+import { deriveInterviewClockView, deriveInterviewQuestionMetrics, deriveInterviewStartState } from '../lib/interviewRoomState';
+import { normalizeReportText } from '../lib/reportText';
 import { supabase } from '../lib/supabase';
 
 type RoomInterviewRow = {
@@ -103,16 +104,21 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
+function isAgentSystemErrorMessage(content: string): boolean {
+  const text = content.trim().toLowerCase();
+  return text.includes('session already exists') || text.includes('agent gateway request failed');
+}
+
 function toReport(raw: unknown): RoomReport | null {
   if (!raw || typeof raw !== 'object') return null;
   const source = raw as Record<string, unknown>;
 
   const overallRaw = source.overall_score;
   const riskRaw = source.risk_score;
-  const overallScore = Number.isFinite(Number(overallRaw)) ? Number(overallRaw) : null;
-  const riskScore = Number.isFinite(Number(riskRaw)) ? Number(riskRaw) : null;
+  const overallScore = overallRaw == null ? null : Number.isFinite(Number(overallRaw)) ? Number(overallRaw) : null;
+  const riskScore = riskRaw == null ? null : Number.isFinite(Number(riskRaw)) ? Number(riskRaw) : null;
   const recommendation = typeof source.recommendation === 'string' ? source.recommendation : null;
-  const summary = typeof source.summary === 'string' ? source.summary : null;
+  const summary = typeof source.summary === 'string' ? normalizeReportText(source.summary) : null;
 
   return {
     overall_score: overallScore,
@@ -251,6 +257,7 @@ export default function InterviewRoom() {
       turns
         .filter((turn) => {
           if (turn.speaker !== 'ai' && turn.speaker !== 'candidate') return false;
+          if (turn.speaker === 'ai' && isAgentSystemErrorMessage(turn.content)) return false;
           if (turn.speaker === 'ai' && getTurnKind(turn.metadata) === 'closing') return false;
           return true;
         })
@@ -507,6 +514,18 @@ export default function InterviewRoom() {
         setNotice('已完成全部题目，请点击右侧“提交”生成评分报告。');
       }
     } catch (err) {
+      setDraft(answer);
+      setMessages((prev) => {
+        const next = [...prev];
+        for (let index = next.length - 1; index >= 0; index -= 1) {
+          const msg = next[index];
+          if (msg.speaker === 'candidate' && msg.content === answer) {
+            next.splice(index, 1);
+            break;
+          }
+        }
+        return next;
+      });
       setError(toErrorMessage(err, '提交回答失败'));
     } finally {
       setBusyAction(null);
@@ -559,10 +578,13 @@ export default function InterviewRoom() {
     setConfirmSubmitOpen(true);
   };
 
-  const statusKey = String(interview?.status ?? '').trim().toLowerCase();
   const isInterviewClosed = sessionFinalized;
-  const hasInterviewStarted =
-    Boolean(interview?.started_at) || messages.length > 0 || statusKey === 'in_progress' || statusKey === 'completed';
+  const { hasInterviewStarted } = deriveInterviewStartState({
+    messages,
+    startedAt: interview?.started_at,
+    status: interview?.status,
+    sessionId: interview?.session_id
+  });
   const activePromptMessage = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const msg = messages[index];
@@ -572,8 +594,8 @@ export default function InterviewRoom() {
     }
     return null;
   }, [messages]);
-  const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal;
   const hasOpenPrompt = Boolean(activePromptMessage);
+  const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal && !hasOpenPrompt;
   const isOvertime = timerView.state === 'overtime';
   const canStart = !!interview?.candidate_id && !isInterviewClosed && !hasInterviewStarted && busyAction === null;
   const canSubmit =
@@ -583,10 +605,9 @@ export default function InterviewRoom() {
     busyAction === null &&
     !isInterviewClosed &&
     hasOpenPrompt &&
-    !allQuestionsAnswered &&
-    !isOvertime;
+    !allQuestionsAnswered;
   const canFinish = hasInterviewStarted && !!interview?.session_id && !isInterviewClosed && busyAction === null;
-  const answerLocked = isInterviewClosed || busyAction === 'finish' || !hasOpenPrompt || allQuestionsAnswered || isOvertime;
+  const answerLocked = isInterviewClosed || busyAction === 'finish' || !hasOpenPrompt || allQuestionsAnswered;
   const currentQuestionLabel = !hasInterviewStarted
     ? '未开始'
     : progressTotal > 0
@@ -607,7 +628,7 @@ export default function InterviewRoom() {
   const submissionRuleLabel = isInterviewClosed
     ? '本场已提交，不可继续编辑'
     : isOvertime
-      ? '已超时，当前仅允许提交'
+      ? '已超时，仍可继续作答并生成后续题目'
       : allQuestionsAnswered
         ? '题目已完成，请直接提交'
         : '回答当前题目后可继续下一题';
@@ -926,7 +947,7 @@ export default function InterviewRoom() {
                     isInterviewClosed
                       ? '已提交，无法继续作答'
                       : isOvertime
-                        ? '已超时，当前考场已锁定作答，仅可提交'
+                        ? '已超时，仍可继续作答，Enter 发送'
                         : allQuestionsAnswered
                           ? '题目已全部完成，请直接提交'
                           : '输入你的回答，Enter 发送，Shift+Enter 换行'

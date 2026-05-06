@@ -430,6 +430,123 @@ function extractOpenAiMessageContent(message: Record<string, unknown> | null): s
   return joined || null;
 }
 
+function describeAbortAsTimeout(controller: AbortController, timeoutMs: number, label: string, error: unknown): Error {
+  if (controller.signal.aborted) {
+    return new Error(`${label}请求超时（${Math.round(timeoutMs / 1000)} 秒），请检查模型服务响应速度或调大 VITE_LLM_TIMEOUT_MS`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function screeningBackendBaseUrl(): string {
+  const configured = cleanText(import.meta.env.VITE_FASTAPI_BASE_URL);
+  if (configured) return configured.replace(/\/+$/, '');
+  return '/api-fast';
+}
+
+function shouldUseBackendScreening(): boolean {
+  const raw = cleanText(import.meta.env.VITE_SCREENING_USE_BACKEND);
+  return raw != null && ['1', 'true', 'on', 'enabled'].includes(raw.toLowerCase());
+}
+
+async function readScreeningBackendError(response: Response): Promise<string> {
+  const fallback = `后端识别失败: HTTP ${response.status}`;
+
+  try {
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      const body = (await response.json()) as Record<string, unknown>;
+      const detail = cleanText(body.detail) ?? cleanText(body.message) ?? cleanText(body.error);
+      return detail ?? fallback;
+    }
+
+    const text = (await response.text()).replace(/\s+/g, ' ').trim();
+    return text ? `${fallback}: ${text.slice(0, 220)}` : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parseBackendPhase1Result(raw: unknown): Phase1PipelineResult {
+  const obj = toObject(raw);
+  if (!obj) throw new Error('后端识别响应格式不正确');
+
+  const candidateId = cleanText(obj.candidateId);
+  const resumeUploadId = cleanText(obj.resumeUploadId);
+  const profileId = cleanText(obj.profileId);
+  const matchId = cleanText(obj.matchId);
+  const overallScore = toFiniteNumber(obj.overallScore, Number.NaN);
+  const recommendation = cleanText(obj.recommendation) as Recommendation | null;
+
+  if (!candidateId || !resumeUploadId || !profileId || !matchId || !Number.isFinite(overallScore) || !recommendation) {
+    throw new Error('后端识别响应缺少必要字段');
+  }
+
+  return {
+    candidateId,
+    resumeUploadId,
+    profileId,
+    matchId,
+    overallScore,
+    recommendation
+  };
+}
+
+async function runPhase1ResumePipelineOnBackend(
+  file: File,
+  position: ActivePositionRow,
+  onStageChange?: (stage: PipelineProgressStage, message: string) => void,
+  options?: Phase1PipelineRunOptions
+): Promise<Phase1PipelineResult> {
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error('登录状态已失效，请重新登录后再识别简历');
+  }
+
+  const formData = new FormData();
+  formData.append('position_json', JSON.stringify(position));
+  formData.append('file', file, file.name);
+
+  const controller = new AbortController();
+  const cancelTimer = options?.shouldCancel
+    ? window.setInterval(() => {
+        if (options.shouldCancel?.()) controller.abort();
+      }, 250)
+    : null;
+
+  onStageChange?.('uploaded', '文件已提交后端，准备解析文本');
+  onStageChange?.('text_extraction', '后端正在解析简历文本');
+
+  try {
+    const response = await fetch(`${screeningBackendBaseUrl()}/api/screening/phase1`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`
+      },
+      body: formData,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(await readScreeningBackendError(response));
+    }
+
+    onStageChange?.('matching', '后端正在生成候选人画像与匹配结果');
+    const result = parseBackendPhase1Result(await response.json());
+    onStageChange?.('completed', '匹配分析已完成');
+    return result;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new PipelineCancelledError('已取消识别');
+    }
+    throw error;
+  } finally {
+    if (cancelTimer != null) window.clearInterval(cancelTimer);
+  }
+}
+
 function openAIChatUrl(baseUrl: string): string {
   const normalized = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   if (normalized.endsWith('/chat/completions')) return normalized;
@@ -462,7 +579,7 @@ function buildRuntimeConfigFromModelRow(
   const temperature = Math.max(0, Math.min(2, toFiniteNumber(envOverrides?.temperature ?? modelRow.temperature, 0.2)));
   const timeoutMs = Math.max(
     5000,
-    Math.min(180000, Math.round(toFiniteNumber(envOverrides?.timeoutMs ?? modelRow.timeout_ms, 45000)))
+    Math.min(180000, Math.round(toFiniteNumber(envOverrides?.timeoutMs ?? modelRow.timeout_ms, 120000)))
   );
   const apiKey = cleanText(envOverrides?.apiKey) ?? cleanText(modelRow.api_key_encrypted);
 
@@ -549,7 +666,7 @@ async function loadLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
   const envApiVersion = cleanText(import.meta.env.VITE_LLM_API_VERSION);
   const envMaxTokens = Math.max(128, Math.min(8192, Math.round(toFiniteNumber(import.meta.env.VITE_LLM_MAX_TOKENS, 2048))));
   const envTemperature = toFiniteNumber(import.meta.env.VITE_LLM_TEMPERATURE, 0.2);
-  const envTimeoutMs = Math.max(5000, Math.min(180000, Math.round(toFiniteNumber(import.meta.env.VITE_LLM_TIMEOUT_MS, 45000))));
+  const envTimeoutMs = Math.max(5000, Math.min(180000, Math.round(toFiniteNumber(import.meta.env.VITE_LLM_TIMEOUT_MS, 120000))));
 
   // Dev override: allow env-only model config to bypass DB registry
   if (envMode !== 'bootstrap' && envModelName && envBaseUrl) {
@@ -584,7 +701,7 @@ async function loadLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
       apiVersion: '2023-06-01',
       maxTokens: 2048,
       temperature: 0.2,
-      timeoutMs: 45000
+      timeoutMs: 120000
     };
   }
 
@@ -607,7 +724,7 @@ async function loadLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
       apiVersion: '2023-06-01',
       maxTokens: 2048,
       temperature: 0.2,
-      timeoutMs: 45000
+      timeoutMs: 120000
     };
   }
 
@@ -615,7 +732,7 @@ async function loadLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
     apiVersion: envApiVersion,
     maxTokens: envMaxTokens !== 2048 ? envMaxTokens : null,
     temperature: envTemperature !== 0.2 ? envTemperature : null,
-    timeoutMs: envTimeoutMs !== 45000 ? envTimeoutMs : null,
+    timeoutMs: envTimeoutMs !== 120000 ? envTimeoutMs : null,
     apiKey: envApiKey
   });
 
@@ -631,7 +748,7 @@ async function loadLlmRuntimeConfig(): Promise<LlmRuntimeConfig> {
       apiVersion: '2023-06-01',
       maxTokens: 2048,
       temperature: 0.2,
-      timeoutMs: 45000
+      timeoutMs: 120000
     };
   }
 
@@ -899,6 +1016,8 @@ async function callOpenAIProtocolJson(
 
     const json = extractJsonPayload(content);
     return { json, raw };
+  } catch (error) {
+    throw describeAbortAsTimeout(controller, config.timeoutMs, 'LLM', error);
   } finally {
     clearTimeout(timeout);
   }
@@ -946,6 +1065,8 @@ async function callAnthropicProtocolJson(
     }
     const json = extractJsonPayload(content);
     return { json, raw };
+  } catch (error) {
+    throw describeAbortAsTimeout(controller, config.timeoutMs, 'LLM', error);
   } finally {
     clearTimeout(timeout);
   }
@@ -993,6 +1114,8 @@ async function callGeminiProtocolJson(
     }
     const json = extractJsonPayload(content);
     return { json, raw };
+  } catch (error) {
+    throw describeAbortAsTimeout(controller, config.timeoutMs, 'LLM', error);
   } finally {
     clearTimeout(timeout);
   }
@@ -2312,6 +2435,10 @@ export async function runPhase1ResumePipeline(
   onStageChange?: (stage: PipelineProgressStage, message: string) => void,
   options?: Phase1PipelineRunOptions
 ): Promise<Phase1PipelineResult> {
+  if (shouldUseBackendScreening()) {
+    return runPhase1ResumePipelineOnBackend(file, position, onStageChange, options);
+  }
+
   let resumeUploadId = '';
   const ensureNotCancelled = () => {
     if (options?.shouldCancel?.()) {

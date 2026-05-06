@@ -21,6 +21,10 @@ export type InterviewQuestionMetrics = {
   completionRate: number;
 };
 
+export type InterviewStartState = {
+  hasInterviewStarted: boolean;
+};
+
 function formatDuration(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const mm = Math.floor(safeSeconds / 60);
@@ -72,7 +76,22 @@ export function deriveInterviewClockView(params: {
     state: 'overtime',
     title: '已超时',
     value: `+${formatDuration(Math.abs(left))}`,
-    hint: '已锁定作答，仅可提交，不会自动提交'
+    hint: '已超时，仍可继续作答，不会自动提交'
+  };
+}
+
+export function deriveInterviewStartState(params: {
+  messages: InterviewRoomMessage[];
+  startedAt?: string | null;
+  status?: string | null;
+  sessionId?: string | null;
+}): InterviewStartState {
+  const status = String(params.status ?? '').trim().toLowerCase();
+  return {
+    hasInterviewStarted:
+      params.messages.some((msg) => msg.content.trim()) ||
+      Boolean(String(params.startedAt ?? '').trim()) ||
+      Boolean(String(params.sessionId ?? '').trim() && ['in_progress', 'completed', 'scoring'].includes(status))
   };
 }
 
@@ -89,7 +108,8 @@ export function deriveInterviewQuestionMetrics(
   });
 
   const askedCount = questionIndexes.length;
-  const totalCount = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : askedCount;
+  const plannedTotal = totalQuestionCount && totalQuestionCount > 0 ? totalQuestionCount : 0;
+  const totalCount = Math.max(plannedTotal, askedCount);
 
   let completedCount = 0;
   questionIndexes.forEach((questionIndex, idx) => {
