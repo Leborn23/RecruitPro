@@ -62,6 +62,15 @@ PROCTORING_EVENT_TYPES = {
     "window_blur",
 }
 PROCTORING_SEVERITIES = {"low", "medium", "high"}
+PROCTORING_EVENT_LABELS = {
+    "camera_denied": "摄像头权限被拒绝",
+    "camera_closed": "摄像头关闭",
+    "no_face": "未检测到人脸",
+    "multiple_faces": "多人入镜",
+    "off_screen_attention": "视线离屏",
+    "page_hidden": "页面隐藏",
+    "window_blur": "窗口失焦",
+}
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
@@ -722,6 +731,109 @@ def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[s
         "summary": "\n".join(summary_lines),
         "risk_score": risk_score,
     }
+
+
+def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    grouped: dict[str, dict[str, Any]] = {}
+    snapshot_paths: list[str] = []
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        severity = normalize_text(event.get("severity"))
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+
+        event_type = normalize_text(event.get("event_type"))
+        label = PROCTORING_EVENT_LABELS.get(event_type, event_type or "未知监考事件")
+        group = grouped.setdefault(
+            event_type or "unknown",
+            {
+                "event_type": event_type or "unknown",
+                "label": label,
+                "count": 0,
+                "high_count": 0,
+                "medium_count": 0,
+                "low_count": 0,
+            },
+        )
+        group["count"] += 1
+        if severity in severity_counts:
+            group[f"{severity}_count"] += 1
+
+        raw_paths = event.get("snapshot_paths") if isinstance(event.get("snapshot_paths"), list) else []
+        for path in raw_paths:
+            text = normalize_text(path)
+            if text and len(snapshot_paths) < 12:
+                snapshot_paths.append(text)
+
+    high_count = severity_counts["high"]
+    medium_count = severity_counts["medium"]
+    low_count = severity_counts["low"]
+    event_count = high_count + medium_count + low_count
+    risk_score = min(100, high_count * 25 + medium_count * 10 + low_count * 3)
+    grouped_summary = sorted(grouped.values(), key=lambda item: (-int(item["count"]), str(item["label"])))
+
+    return {
+        "event_count": event_count,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "low_count": low_count,
+        "risk_score": risk_score,
+        "grouped_summary": grouped_summary,
+        "snapshot_paths": snapshot_paths,
+    }
+
+
+def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    event_count = int(to_number(summary.get("event_count"), 0))
+    if event_count <= 0:
+        return mapped
+
+    risk_score = int(to_number(summary.get("risk_score"), 0))
+    high_count = int(to_number(summary.get("high_count"), 0))
+    medium_count = int(to_number(summary.get("medium_count"), 0))
+    low_count = int(to_number(summary.get("low_count"), 0))
+    severity = "high" if high_count > 0 else ("medium" if medium_count > 0 else "low")
+    labels = [
+        f"{item.get('label')} x{item.get('count')}"
+        for item in summary.get("grouped_summary", [])
+        if isinstance(item, dict) and item.get("label") and item.get("count")
+    ]
+    message = (
+        f"监考风险：检测到{('、'.join(labels) if labels else '异常行为')}，"
+        f"共 {event_count} 次（高 {high_count} / 中 {medium_count} / 低 {low_count}）。"
+    )
+
+    risks = mapped.get("risks") if isinstance(mapped.get("risks"), list) else []
+    risks.append(
+        {
+            "type": "proctoring",
+            "severity": severity,
+            "message": message,
+            "event_count": event_count,
+        }
+    )
+    mapped["risks"] = risks
+
+    evidence = mapped.get("evidence") if isinstance(mapped.get("evidence"), list) else []
+    evidence.append(
+        {
+            "type": "proctoring",
+            "summary": summary.get("grouped_summary", []),
+            "event_count": event_count,
+            "risk_score": risk_score,
+            "snapshot_paths": summary.get("snapshot_paths", []),
+        }
+    )
+    mapped["evidence"] = evidence
+
+    existing_risk_score = mapped.get("risk_score")
+    mapped["risk_score"] = max(int(to_number(existing_risk_score, 0)), risk_score)
+    if high_count > 0 or risk_score >= 40:
+        mapped["recommendation"] = "needs_review"
+    return mapped
 
 
 def map_agent_plan_to_question_plan(interview_plan: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -4164,6 +4276,14 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
             "pending_human_review": True,
         }
     mapped = map_agent_report_to_interview_report(final_report)
+    proctoring_events = db.many(
+        client.table("interview_proctoring_events")
+        .select("event_type,severity,snapshot_paths,created_at")
+        .eq("session_id", payload.sessionId)
+        .order("created_at")
+        .execute()
+    )
+    mapped = merge_proctoring_into_report(mapped, build_proctoring_summary(proctoring_events))
     report = db.first(
         client.table("interview_reports")
         .upsert(
