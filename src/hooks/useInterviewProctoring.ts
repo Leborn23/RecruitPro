@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefCallback, type SetStateAction } from 'react';
 import {
   buildSnapshotPath,
   deriveProctoringSeverity,
@@ -18,7 +18,7 @@ export type UseInterviewProctoringParams = {
 };
 
 export type UseInterviewProctoringResult = {
-  videoRef: RefObject<HTMLVideoElement | null>;
+  videoRef: RefCallback<HTMLVideoElement>;
   status: InterviewProctoringStatus;
   statusText: string;
   consented: boolean;
@@ -79,7 +79,7 @@ function isVisualEvent(type: ProctoringEventType): boolean {
 
 export function useInterviewProctoring(params: UseInterviewProctoringParams): UseInterviewProctoringResult {
   const { interviewId, sessionId, enabled } = params;
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<Detector | null>(null);
   const activeEventsRef = useRef(new Map<ProctoringEventType, ActiveTimedEvent>());
@@ -100,6 +100,18 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const [status, setStatus] = useState<InterviewProctoringStatus>('idle');
   const [statusText, setStatusText] = useState('Proctoring idle');
   const [consented, setConsented] = useState(false);
+
+  const attachStreamToVideo = useCallback((node: HTMLVideoElement | null): void => {
+    videoElementRef.current = node;
+    if (!node || !streamRef.current) return;
+
+    node.srcObject = streamRef.current;
+    node.muted = true;
+    node.playsInline = true;
+    void node.play().catch(() => {
+      // The polling loop still owns detection status; preview playback errors are non-fatal.
+    });
+  }, []);
 
   function setRuntimeStatus(nextStatus: InterviewProctoringStatus, nextText: string): void {
     if (!mountedRef.current) return;
@@ -146,7 +158,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function captureSnapshot(type: ProctoringEventType, timestampMs: number): Promise<string[]> {
-    const video = videoRef.current;
+    const video = videoElementRef.current;
     const currentSessionId = sessionIdRef.current;
 
     if (
@@ -373,8 +385,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     stopStream(streamRef.current);
     streamRef.current = null;
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    if (videoElementRef.current) {
+      videoElementRef.current.srcObject = null;
     }
 
     cleanupDetector();
@@ -400,8 +412,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     streamRef.current = null;
     cleanupDetector();
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    if (videoElementRef.current) {
+      videoElementRef.current.srcObject = null;
     }
 
     await flushEvents();
@@ -411,7 +423,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     if (pollingRef.current || stoppedRef.current) return;
 
     const detector = detectorRef.current;
-    const video = videoRef.current;
+    const video = videoElementRef.current;
     const track = getFirstVideoTrack(streamRef.current);
     if (!detector || !video || !track) return;
 
@@ -530,12 +542,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       return;
     }
 
-    if (!sessionIdRef.current) {
-      setRuntimeStatus('blocked', 'Interview session is not ready');
-      return;
-    }
-
-    const video = videoRef.current;
+    const video = videoElementRef.current;
     if (!video) {
       setRuntimeStatus('error', 'Proctoring video element is not ready');
       return;
@@ -584,8 +591,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       streamRef.current = null;
       cleanupDetector();
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
+      if (videoElementRef.current) {
+        videoElementRef.current.srcObject = null;
       }
 
       stoppedRef.current = true;
@@ -639,7 +646,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }, []);
 
   return {
-    videoRef,
+    videoRef: attachStreamToVideo,
     status,
     statusText,
     consented,
