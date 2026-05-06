@@ -87,6 +87,17 @@ type ProctoringSnapshotView = {
   url: string;
 };
 
+type ProctoringTimelineItem = {
+  label: string;
+  severity: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  faceCount: number | null;
+  faceScore: number | null;
+  attentionSignal: string;
+};
+
 type RecommendationFilter = 'all' | 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending';
 type ScoreBand = 'all' | 'lt60' | '60to79' | '80plus';
 type RiskBand = 'all' | 'low' | 'medium' | 'high';
@@ -323,6 +334,61 @@ function getProctoringSnapshotPaths(report: ScoreReportView | null): string[] {
   }
 
   return paths.slice(0, 12);
+}
+
+function formatReportTime(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '未知时间';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function toSeverityLabel(value: string): string {
+  if (value === 'high') return '高';
+  if (value === 'medium') return '中';
+  if (value === 'low') return '低';
+  return value || '-';
+}
+
+function toAttentionSignalLabel(value: string): string {
+  if (value === 'face_near_edge') return '人脸贴近画面边缘';
+  if (value === 'face_too_small') return '人脸面积过小';
+  if (value === 'face_centered') return '人脸居中';
+  if (value === 'missing_face_bounds') return '缺少人脸框';
+  return value;
+}
+
+function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimelineItem[] {
+  if (!report) return [];
+
+  const timeline: ProctoringTimelineItem[] = [];
+  for (const item of report.evidence ?? []) {
+    if (!isRecord(item) || item.type !== 'proctoring') continue;
+    const details = Array.isArray(item.details) ? item.details : [];
+    for (const detail of details) {
+      if (!isRecord(detail)) continue;
+      const durationMs = Number(detail.duration_ms ?? 0);
+      const faceCount = detail.face_count == null ? null : Number(detail.face_count);
+      const faceScore = detail.face_score == null ? null : Number(detail.face_score);
+      timeline.push({
+        label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
+        severity: String(detail.severity ?? '').trim(),
+        startedAt: formatReportTime(detail.started_at),
+        endedAt: formatReportTime(detail.ended_at),
+        durationMs: Number.isFinite(durationMs) ? durationMs : 0,
+        faceCount: Number.isFinite(faceCount) ? faceCount : null,
+        faceScore: Number.isFinite(faceScore) ? faceScore : null,
+        attentionSignal: String(detail.attention_signal ?? '').trim(),
+      });
+    }
+  }
+
+  return timeline.slice(0, 20);
 }
 
 function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
@@ -1182,6 +1248,7 @@ export default function Interviews() {
   const selectedAction = selectedInterview ? getPrimaryAction(selectedInterview) : null;
   const selectedStepStates = selectedInterview ? getStepStates(selectedInterview) : [];
   const selectedTimeRemaining = selectedInterview ? getTimeRemaining(selectedInterview.schedule_time) : null;
+  const reportProctoringTimeline = getProctoringTimeline(reportData);
   const selectedSummaryItems = selectedInterview
     ? [
         { label: '候选人', value: selectedInterview.name || '待补充' },
@@ -1540,6 +1607,35 @@ export default function Interviews() {
                           <span className="truncate">{snapshot.path.split('/').pop()}</span>
                         </div>
                       </a>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {reportProctoringTimeline.length > 0 ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-on-surface mb-2">监考时间线</h4>
+                  <div className="space-y-2">
+                    {reportProctoringTimeline.map((item, index) => (
+                      <div
+                        key={`proctoring-timeline-${index}-${item.startedAt}`}
+                        className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold">
+                            {item.startedAt} - {item.endedAt} · {item.label}
+                          </span>
+                          <span className="rounded-full border border-amber-300 bg-white/70 px-2 py-0.5 text-[11px]">
+                            风险级别：{toSeverityLabel(item.severity)}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-amber-900">
+                          <span>持续：{Math.round(item.durationMs / 100) / 10}s</span>
+                          {item.faceCount !== null ? <span>人脸数：{item.faceCount}</span> : null}
+                          {item.faceScore !== null ? <span>置信度：{Math.round(item.faceScore * 100)}%</span> : null}
+                          {item.attentionSignal ? <span>{toAttentionSignalLabel(item.attentionSignal)}</span> : null}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>

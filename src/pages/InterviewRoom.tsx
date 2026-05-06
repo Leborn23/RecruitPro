@@ -139,6 +139,16 @@ function getProctoringEvidence(report: RoomReport): Array<{
   eventCount: number;
   riskScore: number;
   snapshotPaths: string[];
+  details: Array<{
+    label: string;
+    severity: string;
+    startedAt: string;
+    endedAt: string;
+    durationMs: number;
+    faceCount: number | null;
+    faceScore: number | null;
+    attentionSignal: string;
+  }>;
 }> {
   return report.evidence
     .filter((item): item is Record<string, unknown> => {
@@ -147,13 +157,46 @@ function getProctoringEvidence(report: RoomReport): Array<{
     .map((item) => {
       const eventCount = Number(item.event_count);
       const riskScore = Number(item.risk_score);
+      const rawDetails = Array.isArray(item.details) ? item.details : [];
       return {
         summary: typeof item.summary === 'string' ? item.summary : '',
         eventCount: Number.isFinite(eventCount) ? Math.round(eventCount) : 0,
         riskScore: Number.isFinite(riskScore) ? Math.round(riskScore) : 0,
-        snapshotPaths: normalizeStringArray(item.snapshot_paths)
+        snapshotPaths: normalizeStringArray(item.snapshot_paths),
+        details: rawDetails
+          .filter((detail): detail is Record<string, unknown> => Boolean(detail && typeof detail === 'object'))
+          .map((detail) => {
+            const durationMs = Number(detail.duration_ms ?? 0);
+            const faceCount = detail.face_count == null ? null : Number(detail.face_count);
+            const faceScore = detail.face_score == null ? null : Number(detail.face_score);
+            return {
+              label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
+              severity: String(detail.severity ?? '').trim(),
+              startedAt: formatDateTime(String(detail.started_at ?? '')),
+              endedAt: formatDateTime(String(detail.ended_at ?? '')),
+              durationMs: Number.isFinite(durationMs) ? durationMs : 0,
+              faceCount: Number.isFinite(faceCount) ? faceCount : null,
+              faceScore: Number.isFinite(faceScore) ? faceScore : null,
+              attentionSignal: String(detail.attention_signal ?? '').trim()
+            };
+          })
       };
     });
+}
+
+function toProctoringSeverityLabel(value: string): string {
+  if (value === 'high') return '高';
+  if (value === 'medium') return '中';
+  if (value === 'low') return '低';
+  return value || '-';
+}
+
+function toProctoringAttentionLabel(value: string): string {
+  if (value === 'face_near_edge') return '人脸贴近画面边缘';
+  if (value === 'face_too_small') return '人脸面积过小';
+  if (value === 'face_centered') return '人脸居中';
+  if (value === 'missing_face_bounds') return '缺少人脸框';
+  return value;
 }
 
 function formatDateTime(value: string | null): string {
@@ -1245,6 +1288,24 @@ export default function InterviewRoom() {
                       <div>事件数量：{evidence.eventCount}</div>
                     </div>
                     {evidence.summary ? <p className="mt-2 whitespace-pre-wrap">{evidence.summary}</p> : null}
+                    {evidence.details.length > 0 ? (
+                      <div className="mt-2 space-y-1.5">
+                        {evidence.details.map((detail, detailIndex) => (
+                          <div key={`proctoring-detail-${detailIndex}`} className="rounded border border-amber-200 bg-white/65 px-2 py-1.5">
+                            <div className="font-semibold">
+                              {detail.startedAt} - {detail.endedAt} · {detail.label}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-amber-800">
+                              <span>级别：{toProctoringSeverityLabel(detail.severity)}</span>
+                              <span>持续：{Math.round(detail.durationMs / 100) / 10}s</span>
+                              {detail.faceCount !== null ? <span>人脸数：{detail.faceCount}</span> : null}
+                              {detail.faceScore !== null ? <span>置信度：{Math.round(detail.faceScore * 100)}%</span> : null}
+                              {detail.attentionSignal ? <span>{toProctoringAttentionLabel(detail.attentionSignal)}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     {evidence.snapshotPaths.length > 0 ? (
                       <p className="mt-2 text-amber-800">已保存异常关键帧 {evidence.snapshotPaths.length} 张，需在受控存储中复核。</p>
                     ) : null}
