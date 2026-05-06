@@ -675,17 +675,23 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
         registerTrackEndedListener(track);
       }
 
-      setRuntimeStatus('requesting', 'Loading face detector');
-      const detector = await createDetector();
-      if (stoppedRef.current || runId !== runIdRef.current) {
-        detector.dispose();
-        return;
-      }
-
-      detectorRef.current = detector;
       registerActivityListeners();
       setRuntimeStatus('ready', '摄像头监考正常');
-      startPolling();
+
+      try {
+        setRuntimeStatus('requesting', '正在加载人脸检测模型');
+        const detector = await createDetector();
+        if (stoppedRef.current || runId !== runIdRef.current) {
+          detector.dispose();
+          return;
+        }
+
+        detectorRef.current = detector;
+        setRuntimeStatus('ready', '摄像头监考正常');
+        startPolling();
+      } catch {
+        setRuntimeStatus('ready', '摄像头已开启，人脸检测暂不可用');
+      }
     } catch (error) {
       stopStream(streamRef.current);
       streamRef.current = null;
