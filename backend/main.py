@@ -737,6 +737,7 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     severity_counts = {"high": 0, "medium": 0, "low": 0}
     grouped: dict[str, dict[str, Any]] = {}
     snapshot_paths: list[str] = []
+    details: list[dict[str, Any]] = []
 
     for event in events:
         if not isinstance(event, dict):
@@ -762,6 +763,21 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         if severity in severity_counts:
             group[f"{severity}_count"] += 1
 
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        detail = {
+            "event_type": event_type or "unknown",
+            "label": label,
+            "severity": severity or "low",
+            "duration_ms": int(to_number(event.get("duration_ms"), 0)),
+            "confidence": to_number(event.get("confidence"), None),
+            "face_count": int(to_number(metadata.get("face_count"), 0)) if metadata.get("face_count") is not None else None,
+            "face_score": to_number(metadata.get("face_score"), None),
+            "attention_signal": normalize_text(metadata.get("attention_signal")),
+            "started_at": event.get("started_at"),
+            "ended_at": event.get("ended_at"),
+        }
+        details.append(detail)
+
         raw_paths = event.get("snapshot_paths") if isinstance(event.get("snapshot_paths"), list) else []
         for path in raw_paths:
             text = normalize_text(path)
@@ -783,6 +799,7 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "risk_score": risk_score,
         "grouped_summary": grouped_summary,
         "snapshot_paths": snapshot_paths,
+        "details": details[:20],
     }
 
 
@@ -824,6 +841,7 @@ def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]
             "type": "proctoring",
             "summary": evidence_summary,
             "grouped_summary": summary.get("grouped_summary", []),
+            "details": summary.get("details", []),
             "event_count": event_count,
             "risk_score": risk_score,
             "snapshot_paths": summary.get("snapshot_paths", []),
@@ -4511,7 +4529,7 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
     mapped = map_agent_report_to_interview_report(final_report)
     proctoring_events = db.many(
         client.table("interview_proctoring_events")
-        .select("event_type,severity,snapshot_paths,created_at")
+        .select("event_type,severity,confidence,started_at,ended_at,duration_ms,snapshot_paths,metadata,created_at")
         .eq("session_id", payload.sessionId)
         .order("created_at")
         .execute()

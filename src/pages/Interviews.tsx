@@ -56,8 +56,8 @@ type ScoreReportView = {
   summary?: string | null;
   dimension_scores?: Record<string, number>;
   strengths?: string[];
-  risks?: string[];
-  evidence?: Array<{ turn_id?: string; turn_no?: number; excerpt?: string }>;
+  risks?: Array<string | Record<string, unknown>>;
+  evidence?: Array<Record<string, unknown> & { turn_id?: string; turn_no?: number; excerpt?: string }>;
   question_evaluations?: Array<{
     question_index?: number;
     question: string;
@@ -224,7 +224,19 @@ function buildConclusionItems(report: ScoreReportView): string[] {
 }
 
 function buildEvidenceItems(report: ScoreReportView): string[] {
+  const proctoringEvidence = (report.evidence ?? [])
+    .map(formatProctoringEvidence)
+    .filter(Boolean);
   const questionEvidence = (report.question_evaluations ?? []).slice(0, 3);
+
+  if (proctoringEvidence.length > 0) {
+    const questionItems = questionEvidence.slice(0, 2).map((item, index) => {
+      const no = (item.question_index ?? index) + 1;
+      return `第 ${no} 题：${item.question || '（无题目）'}`;
+    });
+    return [...proctoringEvidence, ...questionItems];
+  }
+
   if (questionEvidence.length > 0) {
     return questionEvidence.map((item, index) => {
       const no = (item.question_index ?? index) + 1;
@@ -232,7 +244,7 @@ function buildEvidenceItems(report: ScoreReportView): string[] {
     });
   }
 
-  const evidence = (report.evidence ?? []).slice(0, 3);
+  const evidence = (report.evidence ?? []).filter((item) => item.type !== 'proctoring').slice(0, 3);
   if (evidence.length === 0) return ['暂无可展示证据片段。'];
   return evidence.map((item) => `第 ${item.turn_no ?? '-'} 轮：${String(item.excerpt ?? '').trim() || '（无文本）'}`);
 }
@@ -258,6 +270,36 @@ function buildDeductionItems(report: ScoreReportView): string[] {
   return items.length > 0 ? items : ['未发现明显扣分项。'];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function formatProctoringEvidence(item: unknown): string {
+  if (!isRecord(item) || item.type !== 'proctoring') return '';
+
+  const grouped = Array.isArray(item.grouped_summary) ? item.grouped_summary : [];
+  const labels = grouped
+    .map((entry) => {
+      if (!isRecord(entry)) return '';
+      const label = String(entry.label ?? '').trim();
+      const count = Number(entry.count ?? 0);
+      return label && count > 0 ? `${label} ${count} 次` : '';
+    })
+    .filter(Boolean);
+  const summary = String(item.summary ?? '').trim();
+  const eventCount = Number(item.event_count ?? 0);
+  const riskScore = Number(item.risk_score ?? 0);
+
+  if (labels.length > 0) {
+    const suffix = riskScore > 0 ? `，监考风险 ${riskScore} 分` : '';
+    return `摄像头监考：${labels.join('，')}${suffix}`;
+  }
+
+  if (summary) return `摄像头监考：${summary}`;
+  if (eventCount > 0) return `摄像头监考：记录到 ${eventCount} 次异常`;
+  return '';
+}
+
 function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
   const rawDimension = row.dimension_scores as Record<string, unknown> | null;
   const dimensionScores = Object.fromEntries(
@@ -268,12 +310,15 @@ function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
     ? row.strengths.map((item) => String(item ?? '').trim()).filter(Boolean)
     : [];
   const risks = Array.isArray(row.risks)
-    ? row.risks.map((item) => String(item ?? '').trim()).filter(Boolean)
+    ? row.risks
+        .map((item) => (isRecord(item) ? item : String(item ?? '').trim()))
+        .filter((item) => (typeof item === 'string' ? Boolean(item) : true))
     : [];
   const evidence = Array.isArray(row.evidence)
     ? row.evidence.map((item) => {
         const data = (item ?? {}) as Record<string, unknown>;
         return {
+          ...data,
           turn_id: String(data.turn_id ?? ''),
           turn_no: Number(data.turn_no ?? 0) || undefined,
           excerpt: String(data.excerpt ?? '').trim()
@@ -338,7 +383,17 @@ function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
   };
 }
 
-function toInsightZh(text: string): string {
+function toInsightZh(text: string | Record<string, unknown>): string {
+  if (isRecord(text)) {
+    if (text.type === 'proctoring') {
+      const message = String(text.message ?? '').trim();
+      if (message) return message;
+      const eventCount = Number(text.event_count ?? 0);
+      return eventCount > 0 ? `监考风险：记录到 ${eventCount} 次异常。` : '监考风险：记录到摄像头异常。';
+    }
+    return String(text.message ?? text.claim ?? '').trim();
+  }
+
   const normalized = String(text ?? '').trim();
   if (!normalized) return '';
   if (INSIGHT_TEXTS[normalized]) return INSIGHT_TEXTS[normalized];
