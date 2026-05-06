@@ -147,20 +147,17 @@ function getOffScreenAttentionMetadata(
   const centerY = (bounds.yMin + bounds.yMax) / 2 / frameHeight;
   const areaRatio = (faceWidth * faceHeight) / (frameWidth * frameHeight);
   const edgeMargin = 0.01;
-  const centerMin = 0.12;
-  const centerMax = 0.88;
   const touchesEdge =
     bounds.xMin / frameWidth <= edgeMargin ||
     bounds.yMin / frameHeight <= edgeMargin ||
     bounds.xMax / frameWidth >= 1 - edgeMargin ||
     bounds.yMax / frameHeight >= 1 - edgeMargin;
-  const centerOutside = centerX < centerMin || centerX > centerMax || centerY < centerMin || centerY > centerMax;
   const tooSmall = areaRatio > 0 && areaRatio < 0.018;
 
   return {
-    offScreen: touchesEdge || centerOutside || tooSmall,
+    offScreen: touchesEdge || tooSmall,
     metadata: {
-      attention_signal: touchesEdge ? 'face_near_edge' : centerOutside ? 'face_off_center' : tooSmall ? 'face_too_small' : 'face_centered',
+      attention_signal: touchesEdge ? 'face_near_edge' : tooSmall ? 'face_too_small' : 'face_centered',
       face_center_x: Number(centerX.toFixed(3)),
       face_center_y: Number(centerY.toFixed(3)),
       face_area_ratio: Number(areaRatio.toFixed(3)),
@@ -357,7 +354,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   function hasThresholdWarning(timestampMs: number): boolean {
     for (const [type, active] of activeEventsRef.current) {
       const durationMs = Math.max(0, timestampMs - active.startedMs);
-      if (type !== 'camera_closed' && shouldCommitTimedEvent(type, durationMs)) {
+      if (type !== 'camera_closed' && type !== 'off_screen_attention' && shouldCommitTimedEvent(type, durationMs)) {
         return true;
       }
     }
