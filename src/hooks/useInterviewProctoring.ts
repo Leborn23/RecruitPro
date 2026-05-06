@@ -34,6 +34,13 @@ type DetectedFace = {
   keypoints?: unknown[];
 };
 
+type FaceBounds = {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+};
+
 type Detector = {
   estimateFaces: (video: HTMLVideoElement, config?: { flipHorizontal?: boolean }) => Promise<DetectedFace[]>;
   dispose: () => void;
@@ -77,6 +84,88 @@ function shouldCommitTimedEvent(type: ProctoringEventType, durationMs: number): 
 
 function isVisualEvent(type: ProctoringEventType): boolean {
   return type !== 'page_hidden' && type !== 'window_blur';
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function readFaceBounds(face: DetectedFace): FaceBounds | null {
+  if (face.box && typeof face.box === 'object') {
+    const box = face.box as Record<string, unknown>;
+    const xMin = toFiniteNumber(box.xMin ?? box.x);
+    const yMin = toFiniteNumber(box.yMin ?? box.y);
+    const width = toFiniteNumber(box.width);
+    const height = toFiniteNumber(box.height);
+    const xMax = toFiniteNumber(box.xMax) ?? (xMin !== null && width !== null ? xMin + width : null);
+    const yMax = toFiniteNumber(box.yMax) ?? (yMin !== null && height !== null ? yMin + height : null);
+
+    if (xMin !== null && yMin !== null && xMax !== null && yMax !== null && xMax > xMin && yMax > yMin) {
+      return { xMin, yMin, xMax, yMax };
+    }
+  }
+
+  const keypoints = Array.isArray(face.keypoints) ? face.keypoints : [];
+  const points = keypoints
+    .map((point) => {
+      if (!point || typeof point !== 'object') return null;
+      const source = point as Record<string, unknown>;
+      const x = toFiniteNumber(source.x);
+      const y = toFiniteNumber(source.y);
+      return x !== null && y !== null ? { x, y } : null;
+    })
+    .filter((point): point is { x: number; y: number } => point !== null);
+
+  if (points.length === 0) return null;
+
+  return {
+    xMin: Math.min(...points.map((point) => point.x)),
+    yMin: Math.min(...points.map((point) => point.y)),
+    xMax: Math.max(...points.map((point) => point.x)),
+    yMax: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+function getOffScreenAttentionMetadata(
+  face: DetectedFace | undefined,
+  frameWidth: number,
+  frameHeight: number
+): { offScreen: boolean; metadata: Record<string, unknown> } {
+  if (!face || frameWidth <= 0 || frameHeight <= 0) {
+    return { offScreen: false, metadata: {} };
+  }
+
+  const bounds = readFaceBounds(face);
+  if (!bounds) {
+    return { offScreen: false, metadata: { attention_signal: 'missing_face_bounds' } };
+  }
+
+  const faceWidth = bounds.xMax - bounds.xMin;
+  const faceHeight = bounds.yMax - bounds.yMin;
+  const centerX = (bounds.xMin + bounds.xMax) / 2 / frameWidth;
+  const centerY = (bounds.yMin + bounds.yMax) / 2 / frameHeight;
+  const areaRatio = (faceWidth * faceHeight) / (frameWidth * frameHeight);
+  const edgeMargin = 0.03;
+  const centerMin = 0.22;
+  const centerMax = 0.78;
+  const touchesEdge =
+    bounds.xMin / frameWidth <= edgeMargin ||
+    bounds.yMin / frameHeight <= edgeMargin ||
+    bounds.xMax / frameWidth >= 1 - edgeMargin ||
+    bounds.yMax / frameHeight >= 1 - edgeMargin;
+  const centerOutside = centerX < centerMin || centerX > centerMax || centerY < centerMin || centerY > centerMax;
+  const tooSmall = areaRatio > 0 && areaRatio < 0.04;
+
+  return {
+    offScreen: touchesEdge || centerOutside || tooSmall,
+    metadata: {
+      attention_signal: touchesEdge ? 'face_near_edge' : centerOutside ? 'face_off_center' : tooSmall ? 'face_too_small' : 'face_centered',
+      face_center_x: Number(centerX.toFixed(3)),
+      face_center_y: Number(centerY.toFixed(3)),
+      face_area_ratio: Number(areaRatio.toFixed(3)),
+    },
+  };
 }
 
 export function useInterviewProctoring(params: UseInterviewProctoringParams): UseInterviewProctoringResult {
@@ -445,6 +534,11 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       const faces = await detector.estimateFaces(video, { flipHorizontal: false });
       await trackTimedCondition('no_face', faces.length === 0, nowMs, { face_count: faces.length });
       await trackTimedCondition('multiple_faces', faces.length > 1, nowMs, { face_count: faces.length });
+      const attention = getOffScreenAttentionMetadata(faces.length === 1 ? faces[0] : undefined, video.videoWidth, video.videoHeight);
+      await trackTimedCondition('off_screen_attention', faces.length === 1 && attention.offScreen, nowMs, {
+        face_count: faces.length,
+        ...attention.metadata,
+      });
       refreshReadyStatus(nowMs);
     } catch (error) {
       if (!stoppedRef.current) {
