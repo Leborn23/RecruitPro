@@ -146,16 +146,16 @@ function getOffScreenAttentionMetadata(
   const centerX = (bounds.xMin + bounds.xMax) / 2 / frameWidth;
   const centerY = (bounds.yMin + bounds.yMax) / 2 / frameHeight;
   const areaRatio = (faceWidth * faceHeight) / (frameWidth * frameHeight);
-  const edgeMargin = 0.03;
-  const centerMin = 0.22;
-  const centerMax = 0.78;
+  const edgeMargin = 0.01;
+  const centerMin = 0.12;
+  const centerMax = 0.88;
   const touchesEdge =
     bounds.xMin / frameWidth <= edgeMargin ||
     bounds.yMin / frameHeight <= edgeMargin ||
     bounds.xMax / frameWidth >= 1 - edgeMargin ||
     bounds.yMax / frameHeight >= 1 - edgeMargin;
   const centerOutside = centerX < centerMin || centerX > centerMax || centerY < centerMin || centerY > centerMax;
-  const tooSmall = areaRatio > 0 && areaRatio < 0.04;
+  const tooSmall = areaRatio > 0 && areaRatio < 0.018;
 
   return {
     offScreen: touchesEdge || centerOutside || tooSmall,
@@ -189,7 +189,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const enabledRef = useRef(enabled);
   const consentedRef = useRef(false);
   const [status, setStatus] = useState<InterviewProctoringStatus>('idle');
-  const [statusText, setStatusText] = useState('Proctoring idle');
+  const [statusText, setStatusText] = useState('摄像头监考未开启');
   const [consented, setConsented] = useState(false);
 
   const attachStreamToVideo = useCallback((node: HTMLVideoElement | null): void => {
@@ -369,11 +369,11 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     if (stoppedRef.current) return;
 
     if (hasThresholdWarning(timestampMs)) {
-      setRuntimeStatus('warning', 'Proctoring warning detected');
+      setRuntimeStatus('warning', '请保持面部在摄像头画面内');
       return;
     }
 
-    setRuntimeStatus('ready', 'Proctoring active');
+    setRuntimeStatus('ready', '摄像头监考正常');
   }
 
   async function recordCameraClosed(timestampMs: number, metadata: Record<string, unknown>): Promise<void> {
@@ -381,7 +381,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     openTimedEvent('camera_closed', timestampMs, metadata);
     await closeTimedEvent('camera_closed', timestampMs, metadata);
-    setRuntimeStatus('blocked', 'Camera stream closed');
+    setRuntimeStatus('blocked', '摄像头已关闭');
   }
 
   async function flushEvents(): Promise<void> {
@@ -485,7 +485,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     }
 
     cleanupDetector();
-    setRuntimeStatus('idle', 'Proctoring idle');
+    setRuntimeStatus('idle', '摄像头监考未开启');
 
     if (shouldFlush) {
       await flushEvents();
@@ -542,7 +542,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       refreshReadyStatus(nowMs);
     } catch (error) {
       if (!stoppedRef.current) {
-        setRuntimeStatus('error', resolveErrorMessage(error, 'Face detection failed'));
+        setRuntimeStatus('error', resolveErrorMessage(error, '人脸检测失败'));
       }
     } finally {
       pollingRef.current = false;
@@ -628,23 +628,23 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
   async function start(): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setRuntimeStatus('blocked', 'Camera access is unavailable in this browser');
+      setRuntimeStatus('blocked', '当前浏览器无法访问摄像头');
       return;
     }
 
     if (!enabledRef.current) {
-      setRuntimeStatus('idle', 'Proctoring disabled');
+      setRuntimeStatus('idle', '摄像头监考未启用');
       return;
     }
 
     if (!consentedRef.current) {
-      setRuntimeStatus('blocked', 'Camera consent is required');
+      setRuntimeStatus('blocked', '请先同意开启摄像头监考');
       return;
     }
 
     const video = videoElementRef.current;
     if (!video) {
-      setRuntimeStatus('error', 'Proctoring video element is not ready');
+      setRuntimeStatus('error', '摄像头预览未准备好');
       return;
     }
 
@@ -655,7 +655,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
     stoppedRef.current = false;
-    setRuntimeStatus('requesting', 'Requesting camera access');
+    setRuntimeStatus('requesting', '正在请求摄像头权限');
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
@@ -684,7 +684,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
       detectorRef.current = detector;
       registerActivityListeners();
-      setRuntimeStatus('ready', 'Proctoring active');
+      setRuntimeStatus('ready', '摄像头监考正常');
       startPolling();
     } catch (error) {
       stopStream(streamRef.current);
@@ -696,7 +696,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       }
 
       stoppedRef.current = true;
-      const message = resolveErrorMessage(error, 'Camera access failed');
+      const message = resolveErrorMessage(error, '摄像头访问失败');
       setRuntimeStatus(message.toLowerCase().includes('permission') ? 'blocked' : 'error', message);
 
       const currentSessionId = sessionIdRef.current;
