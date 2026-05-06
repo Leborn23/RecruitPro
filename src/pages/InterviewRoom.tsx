@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, Info, Play, Send, Timer } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowLeft, Camera, CameraOff, CheckCircle2, Info, Play, Send, ShieldCheck, Timer } from 'lucide-react';
+import { useInterviewProctoring } from '../hooks/useInterviewProctoring';
 import { fetchInterviewReportByInterview, fetchInterviewTurns, interviewRuntimeEdge } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
@@ -208,6 +209,11 @@ export default function InterviewRoom() {
   const [passwordError, setPasswordError] = useState('');
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionFinalized = hasSubmitted || isClosedStatus(interview?.status);
+  const proctoring = useInterviewProctoring({
+    interviewId,
+    sessionId: interview?.session_id ?? null,
+    enabled: accessGranted && !sessionFinalized
+  });
 
   const progressMetrics = useMemo(
     () => deriveInterviewQuestionMetrics(messages, totalQuestionCount, sessionFinalized),
@@ -526,6 +532,8 @@ export default function InterviewRoom() {
     setError('');
     setNotice('');
     try {
+      await proctoring.flushEvents();
+
       await interviewRuntimeEdge.finishInterview({
         interviewId: interview.id,
         sessionId
@@ -575,7 +583,28 @@ export default function InterviewRoom() {
   const allQuestionsAnswered = progressTotal > 0 && answeredCount >= progressTotal;
   const hasOpenPrompt = Boolean(activePromptMessage);
   const isOvertime = timerView.state === 'overtime';
-  const canStart = !!interview?.candidate_id && !isInterviewClosed && !hasInterviewStarted && busyAction === null;
+  const proctoringReady = proctoring.status === 'ready';
+  const proctoringRequesting = proctoring.status === 'requesting';
+  const proctoringStartDisabled = !proctoring.consented || proctoringRequesting || proctoringReady;
+  const ProctoringStatusIcon = proctoringReady
+    ? ShieldCheck
+    : proctoring.status === 'blocked' || proctoring.status === 'error'
+      ? CameraOff
+      : Camera;
+  const proctoringStatusClass = proctoringReady
+    ? 'border-primary/20 bg-primary/10 text-primary'
+    : proctoring.status === 'blocked' || proctoring.status === 'error'
+      ? 'border-error/20 bg-[#fff6f8] text-error'
+      : proctoring.status === 'warning'
+        ? 'border-amber-300 bg-amber-50 text-amber-800'
+        : 'border-[#d6e2f1] bg-white text-[#4b6b90]';
+  const canStart =
+    !!interview?.candidate_id &&
+    !isInterviewClosed &&
+    !hasInterviewStarted &&
+    busyAction === null &&
+    proctoring.consented &&
+    proctoringReady;
   const canSubmit =
     hasInterviewStarted &&
     !!interview?.session_id &&
@@ -826,6 +855,56 @@ export default function InterviewRoom() {
               </p>
             </div>
 
+            <div className="rounded-[22px] border border-[#d6e2f1] bg-[#f7fbff] p-4 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-[#16355f]">
+                    <ShieldCheck className="w-4 h-4" />
+                    摄像头监考
+                  </h3>
+                  <p className="text-xs text-[#6b86a4]">仅保存异常关键帧，不进行全程录像。</p>
+                </div>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${proctoringStatusClass}`}>
+                  <ProctoringStatusIcon className="w-3.5 h-3.5" />
+                  {proctoring.statusText}
+                </span>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_260px]">
+                <div className="space-y-3">
+                  <label className="flex items-start gap-2 rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3 text-sm text-[#355b87]">
+                    <input
+                      type="checkbox"
+                      checked={proctoring.consented}
+                      onChange={(event) => proctoring.setConsented(event.target.checked)}
+                      className="mt-1 h-4 w-4 rounded border-[#c7daf6] text-primary focus:ring-primary"
+                    />
+                    <span>
+                      我同意在本场面试中开启摄像头监考，并知悉系统仅保存异常关键帧，不进行全程录像。
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void proctoring.start()}
+                    disabled={proctoringStartDisabled}
+                    className="inline-flex items-center justify-center gap-2 rounded-md bg-white border border-[#c7daf6] px-4 py-2.5 text-sm font-semibold text-[#355b87] hover:bg-[#eef5ff] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <Camera className="w-4 h-4" />
+                    {proctoringRequesting ? '正在打开摄像头...' : proctoringReady ? '摄像头已就绪' : '打开摄像头'}
+                  </button>
+                </div>
+
+                <div className="overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                  <video
+                    ref={proctoring.videoRef}
+                    muted
+                    playsInline
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => void handleStart()}
@@ -957,6 +1036,30 @@ export default function InterviewRoom() {
                 <p className={`text-2xl font-semibold leading-tight ${isOvertime ? 'text-[#c43d4b]' : 'text-[#16355f]'}`}>{timerView.value}</p>
                 <p className="text-[11px] text-[#6b86a4]">{timerView.hint}</p>
               </div>
+
+              {!isInterviewClosed ? (
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-3 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-[#c7daf6] bg-[#0f172a]">
+                      <video
+                        ref={proctoring.videoRef}
+                        muted
+                        playsInline
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
+                        <ProctoringStatusIcon className="w-3.5 h-3.5" />
+                        摄像头监考
+                      </p>
+                      <span className={`mt-1 inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${proctoringStatusClass}`}>
+                        <span className="truncate">{proctoring.statusText}</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <button
                 onClick={handleRequestSubmit}
