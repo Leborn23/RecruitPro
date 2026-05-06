@@ -82,10 +82,17 @@ type ScoreReportView = {
   human_confirmed_at?: string | null;
 };
 
+type ProctoringSnapshotView = {
+  path: string;
+  url: string;
+};
+
 type RecommendationFilter = 'all' | 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending';
 type ScoreBand = 'all' | 'lt60' | '60to79' | '80plus';
 type RiskBand = 'all' | 'low' | 'medium' | 'high';
 type SortBy = 'schedule_desc' | 'schedule_asc' | 'score_desc' | 'score_asc' | 'risk_desc' | 'updated_desc';
+
+const PROCTORING_BUCKET = 'interview-proctoring';
 
 const RECOMMENDATION_LABELS: Record<string, string> = {
   hire: '建议通过',
@@ -300,6 +307,24 @@ function formatProctoringEvidence(item: unknown): string {
   return '';
 }
 
+function getProctoringSnapshotPaths(report: ScoreReportView | null): string[] {
+  if (!report) return [];
+
+  const paths: string[] = [];
+  for (const item of report.evidence ?? []) {
+    if (!isRecord(item) || item.type !== 'proctoring') continue;
+    const snapshotPaths = Array.isArray(item.snapshot_paths) ? item.snapshot_paths : [];
+    for (const path of snapshotPaths) {
+      const normalized = String(path ?? '').trim();
+      if (normalized && !paths.includes(normalized)) {
+        paths.push(normalized);
+      }
+    }
+  }
+
+  return paths.slice(0, 12);
+}
+
 function mapReportRowToView(row: InterviewReportRow): ScoreReportView {
   const rawDimension = row.dimension_scores as Record<string, unknown> | null;
   const dimensionScores = Object.fromEntries(
@@ -476,6 +501,7 @@ export default function Interviews() {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportInterviewName, setReportInterviewName] = useState('');
   const [reportData, setReportData] = useState<ScoreReportView | null>(null);
+  const [reportSnapshots, setReportSnapshots] = useState<ProctoringSnapshotView[]>([]);
   const [reportModalFullscreen, setReportModalFullscreen] = useState(false);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [configuredQuestionCount, setConfiguredQuestionCount] = useState(DEFAULT_INTERVIEW_QUESTION_COUNT);
@@ -703,17 +729,41 @@ export default function Interviews() {
     setReportModalOpen(false);
     setReportInterviewName('');
     setReportData(null);
+    setReportSnapshots([]);
     setReportModalFullscreen(false);
   };
 
   const openReportModal = (interview: InterviewRow, report: ScoreReportView) => {
     setReportInterviewName(interview.name || '候选人');
-    setReportData({
+    const normalizedReport = {
       ...report,
       summary: normalizeReportText(report.summary)
-    });
+    };
+    setReportData(normalizedReport);
+    setReportSnapshots([]);
     setReportModalFullscreen(false);
     setReportModalOpen(true);
+
+    const paths = getProctoringSnapshotPaths(normalizedReport);
+    if (paths.length > 0) {
+      supabase.storage
+        .from(PROCTORING_BUCKET)
+        .createSignedUrls(paths, 60 * 30)
+        .then(({ data, error }) => {
+          if (error) {
+            console.warn('生成监考关键帧访问链接失败:', error.message);
+            return;
+          }
+
+          const snapshots = (data ?? [])
+            .map((item, index) => ({
+              path: item.path || paths[index] || '',
+              url: item.signedUrl || ''
+            }))
+            .filter((item) => item.path && item.url);
+          setReportSnapshots(snapshots);
+        });
+    }
   };
 
   const interviewsWithReport = useMemo(
@@ -1465,6 +1515,35 @@ export default function Interviews() {
                   ))}
                 </div>
               </div>
+
+              {reportSnapshots.length > 0 ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-on-surface mb-2">监考关键帧</h4>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {reportSnapshots.map((snapshot, index) => (
+                      <a
+                        key={`${snapshot.path}-${index}`}
+                        href={snapshot.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="group overflow-hidden rounded border border-outline-variant/20 bg-surface-container-low"
+                        title={snapshot.path}
+                      >
+                        <img
+                          src={snapshot.url}
+                          alt={`监考关键帧 ${index + 1}`}
+                          className="h-36 w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                          loading="lazy"
+                        />
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] text-on-surface-variant">
+                          <span>关键帧 {index + 1}</span>
+                          <span className="truncate">{snapshot.path.split('/').pop()}</span>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <div>
                 <h4 className="text-sm font-semibold text-on-surface mb-2">逐题评分</h4>
