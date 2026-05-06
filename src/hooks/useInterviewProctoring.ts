@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
-import type { FaceDetector } from '@tensorflow-models/face-detection';
 import {
   buildSnapshotPath,
   deriveProctoringSeverity,
@@ -27,6 +26,17 @@ export type UseInterviewProctoringResult = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   flushEvents: () => Promise<void>;
+};
+
+type DetectedFace = {
+  box?: unknown;
+  keypoints?: unknown[];
+};
+
+type Detector = {
+  estimateFaces: (video: HTMLVideoElement, config?: { flipHorizontal?: boolean }) => Promise<DetectedFace[]>;
+  dispose: () => void;
+  reset: () => void;
 };
 
 type ActiveTimedEvent = {
@@ -71,7 +81,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const { interviewId, sessionId, enabled } = params;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const detectorRef = useRef<FaceDetector | null>(null);
+  const detectorRef = useRef<Detector | null>(null);
   const activeEventsRef = useRef(new Map<ProctoringEventType, ActiveTimedEvent>());
   const pendingEventsRef = useRef<ProctoringEventInput[]>([]);
   const pollTimerRef = useRef<number | null>(null);
@@ -494,11 +504,11 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     };
   }
 
-  async function createDetector(): Promise<FaceDetector> {
+  async function createDetector(): Promise<Detector> {
     await import('@tensorflow/tfjs-backend-webgl');
-    const faceDetection = await import('@tensorflow-models/face-detection');
+    const tfjsDetector = await import('@tensorflow-models/face-detection/dist/tfjs/detector.js');
 
-    return faceDetection.createDetector(faceDetection.SupportedModels.MediaPipeFaceDetector, {
+    return tfjsDetector.load({
       runtime: 'tfjs',
       maxFaces: 3,
     });
