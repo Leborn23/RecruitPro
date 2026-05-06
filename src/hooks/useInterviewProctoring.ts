@@ -77,6 +77,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const pollTimerRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
   const flushingRef = useRef(false);
+  const flushAgainRef = useRef(false);
   const stoppedRef = useRef(true);
   const mountedRef = useRef(false);
   const runIdRef = useRef(0);
@@ -212,6 +213,18 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     });
   }
 
+  async function closeActiveTimedEvents(
+    timestampMs: number,
+    metadata: Record<string, unknown>,
+    excludedTypes: Set<ProctoringEventType> = new Set()
+  ): Promise<void> {
+    const activeTypes = [...activeEventsRef.current.keys()].filter((type) => !excludedTypes.has(type));
+
+    for (const type of activeTypes) {
+      await closeTimedEvent(type, timestampMs, metadata);
+    }
+  }
+
   function trackTimedCondition(
     type: ProctoringEventType,
     condition: boolean,
@@ -257,47 +270,63 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function flushEvents(): Promise<void> {
-    if (flushingRef.current || pendingEventsRef.current.length === 0) return;
-
-    flushingRef.current = true;
-    const eventsToFlush = pendingEventsRef.current.splice(0);
-    const grouped = new Map<string, ProctoringEventInput[]>();
-
-    for (const event of eventsToFlush) {
-      const key = `${event.interview_id}\n${event.session_id}`;
-      grouped.set(key, [...(grouped.get(key) ?? []), event]);
+    if (flushingRef.current) {
+      flushAgainRef.current = true;
+      return;
     }
 
-    const requeue: ProctoringEventInput[] = [];
+    if (pendingEventsRef.current.length === 0) return;
+
+    flushingRef.current = true;
 
     try {
-      for (const groupEvents of grouped.values()) {
-        const firstEvent = groupEvents[0];
-        if (!firstEvent) continue;
+      while (pendingEventsRef.current.length > 0 || flushAgainRef.current) {
+        flushAgainRef.current = false;
 
-        try {
-          await interviewRuntimeEdge.recordProctoringEvents({
-            interviewId: firstEvent.interview_id,
-            sessionId: firstEvent.session_id,
-            events: groupEvents.map((event) => ({
-              eventType: event.event_type,
-              severity: event.severity,
-              confidence: event.confidence ?? 1,
-              startedAt: event.started_at,
-              endedAt: event.ended_at ?? null,
-              durationMs: event.duration_ms,
-              snapshotPaths: event.snapshot_paths,
-              metadata: event.metadata ?? {},
-            })),
-          });
-        } catch {
-          requeue.push(...groupEvents);
+        if (pendingEventsRef.current.length === 0) {
+          continue;
+        }
+
+        const eventsToFlush = pendingEventsRef.current.splice(0);
+        const grouped = new Map<string, ProctoringEventInput[]>();
+
+        for (const event of eventsToFlush) {
+          const key = `${event.interview_id}\n${event.session_id}`;
+          grouped.set(key, [...(grouped.get(key) ?? []), event]);
+        }
+
+        const requeue: ProctoringEventInput[] = [];
+
+        for (const groupEvents of grouped.values()) {
+          const firstEvent = groupEvents[0];
+          if (!firstEvent) continue;
+
+          try {
+            await interviewRuntimeEdge.recordProctoringEvents({
+              interviewId: firstEvent.interview_id,
+              sessionId: firstEvent.session_id,
+              events: groupEvents.map((event) => ({
+                eventType: event.event_type,
+                severity: event.severity,
+                confidence: event.confidence ?? 1,
+                startedAt: event.started_at,
+                endedAt: event.ended_at ?? null,
+                durationMs: event.duration_ms,
+                snapshotPaths: event.snapshot_paths,
+                metadata: event.metadata ?? {},
+              })),
+            });
+          } catch {
+            requeue.push(...groupEvents);
+          }
+        }
+
+        if (requeue.length > 0) {
+          pendingEventsRef.current = [...requeue, ...pendingEventsRef.current];
+          return;
         }
       }
     } finally {
-      if (requeue.length > 0) {
-        pendingEventsRef.current = [...requeue, ...pendingEventsRef.current];
-      }
       flushingRef.current = false;
     }
   }
@@ -329,10 +358,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     cleanupTrackEndedListener();
 
     const nowMs = Date.now();
-    const activeTypes = [...activeEventsRef.current.keys()];
-    for (const type of activeTypes) {
-      await closeTimedEvent(type, nowMs, { stopped: true });
-    }
+    await closeActiveTimedEvents(nowMs, { stopped: true });
 
     stopStream(streamRef.current);
     streamRef.current = null;
@@ -354,6 +380,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     const nowMs = Date.now();
     await recordCameraClosed(nowMs, { ready_state: 'ended' });
+    await closeActiveTimedEvents(nowMs, { camera_closed: true }, new Set<ProctoringEventType>(['camera_closed']));
     runIdRef.current += 1;
     stoppedRef.current = true;
     clearPollTimer();
