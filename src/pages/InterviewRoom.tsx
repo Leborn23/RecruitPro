@@ -1084,25 +1084,23 @@ export default function InterviewRoom() {
               </div>
 
               {!isInterviewClosed ? (
-                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] px-3 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-[#c7daf6] bg-[#0f172a]">
-                      <video
-                        ref={proctoring.videoRef}
-                        muted
-                        playsInline
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
-                        <ProctoringStatusIcon className="w-3.5 h-3.5" />
-                        摄像头监考
-                      </p>
-                      <span className={`mt-1 inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${proctoringStatusClass}`}>
-                        <span className="truncate">{proctoring.statusText}</span>
-                      </span>
-                    </div>
+                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
+                      <ProctoringStatusIcon className="w-3.5 h-3.5" />
+                      摄像头监考
+                    </p>
+                    <span className={`inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${proctoringStatusClass}`}>
+                      <span className="truncate">{proctoring.statusText}</span>
+                    </span>
+                  </div>
+                  <div className="w-full overflow-hidden rounded-lg border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                    <video
+                      ref={proctoring.videoRef}
+                      muted
+                      playsInline
+                      className="h-full w-full object-cover"
+                    />
                   </div>
                 </div>
               ) : null}
