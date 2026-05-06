@@ -39,6 +39,7 @@ type RoomReport = {
   dimension_scores: Record<string, number>;
   strengths: string[];
   risks: string[];
+  evidence: unknown[];
 };
 
 const RECOMMENDATION_LABELS: Record<string, string> = {
@@ -114,6 +115,7 @@ function toReport(raw: unknown): RoomReport | null {
   const riskScore = Number.isFinite(Number(riskRaw)) ? Number(riskRaw) : null;
   const recommendation = typeof source.recommendation === 'string' ? source.recommendation : null;
   const summary = typeof source.summary === 'string' ? source.summary : null;
+  const evidence = Array.isArray(source.evidence) ? source.evidence : [];
 
   return {
     overall_score: overallScore,
@@ -122,8 +124,31 @@ function toReport(raw: unknown): RoomReport | null {
     summary,
     dimension_scores: normalizeDimensionScores(source.dimension_scores),
     strengths: normalizeStringArray(source.strengths),
-    risks: normalizeStringArray(source.risks)
+    risks: normalizeStringArray(source.risks),
+    evidence
   };
+}
+
+function getProctoringEvidence(report: RoomReport): Array<{
+  summary: string;
+  eventCount: number;
+  riskScore: number;
+  snapshotPaths: string[];
+}> {
+  return report.evidence
+    .filter((item): item is Record<string, unknown> => {
+      return Boolean(item && typeof item === 'object' && (item as Record<string, unknown>).type === 'proctoring');
+    })
+    .map((item) => {
+      const eventCount = Number(item.event_count);
+      const riskScore = Number(item.risk_score);
+      return {
+        summary: typeof item.summary === 'string' ? item.summary : '',
+        eventCount: Number.isFinite(eventCount) ? Math.round(eventCount) : 0,
+        riskScore: Number.isFinite(riskScore) ? Math.round(riskScore) : 0,
+        snapshotPaths: normalizeStringArray(item.snapshot_paths)
+      };
+    });
 }
 
 function formatDateTime(value: string | null): string {
@@ -649,6 +674,7 @@ export default function InterviewRoom() {
         : hasOpenPrompt
           ? '作答中'
           : '等待题目';
+  const proctoringEvidence = report ? getProctoringEvidence(report) : [];
 
   if (loading) {
     return (
@@ -1146,6 +1172,27 @@ export default function InterviewRoom() {
             {report.summary && (
               <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-xs text-on-surface whitespace-pre-wrap">
                 {report.summary}
+              </div>
+            )}
+
+            {proctoringEvidence.length > 0 && (
+              <div className="space-y-2">
+                {proctoringEvidence.map((evidence, index) => (
+                  <div key={index} className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="h-4 w-4 shrink-0" />
+                      <span>摄像头风控复核</span>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div>风险评分：{evidence.riskScore}</div>
+                      <div>事件数量：{evidence.eventCount}</div>
+                    </div>
+                    {evidence.summary && <p className="mt-2 whitespace-pre-wrap leading-relaxed">{evidence.summary}</p>}
+                    {evidence.snapshotPaths.length > 0 && (
+                      <p className="mt-2 text-amber-800">关键帧已保存在受控存储中，仅 HR 复核可见。</p>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
