@@ -4434,7 +4434,7 @@ def record_proctoring_events(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     user = require_user(authorization)
-    client = db.get_client(get_bearer_token(authorization))
+    client = db.get_client()
 
     session = db.first(
         client.table("interview_sessions")

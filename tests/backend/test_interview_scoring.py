@@ -167,7 +167,7 @@ class InterviewProctoringEventsTest(unittest.TestCase):
         self.assertEqual(inserted["created_by"], "user-1")
         self.assertEqual(inserted["snapshot_paths"], ["/snapshots/a.jpg", "/snapshots/b.jpg", "/snapshots/c.jpg"])
         self.assertEqual(inserted["metadata"], {"face_count": 2})
-        self.assertEqual(fake_db.last_user_token, "token")
+        self.assertIsNone(fake_db.last_user_token)
 
     def test_record_proctoring_events_rejects_session_interview_mismatch(self) -> None:
         fake_db = _FakeDB(
