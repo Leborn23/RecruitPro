@@ -188,6 +188,21 @@ export interface HumanConfirmPayload {
   note?: string | null;
 }
 
+export interface RecordProctoringEventsPayload {
+  interviewId: string;
+  sessionId: string;
+  events: Array<{
+    eventType: string;
+    severity: string;
+    confidence: number;
+    startedAt: string;
+    endedAt?: string | null;
+    durationMs: number;
+    snapshotPaths: string[];
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
 const UPCOMING_INTERVIEW_COLUMNS =
   'id,candidate_id,name,stage,position,schedule_time,interviewer,location_type,status,join_url,started_at,ended_at,session_id,ai_report_id,created_by,updated_by,created_at,updated_at';
 
@@ -199,6 +214,10 @@ const INTERVIEW_TURN_COLUMNS =
 
 const INTERVIEW_REPORT_COLUMNS =
   'id,session_id,interview_id,candidate_id,overall_score,dimension_scores,strengths,risks,recommendation,evidence,summary,risk_score,human_confirmed,human_confirmed_by,human_confirmed_at,generated_by,created_at,updated_at';
+
+const fastApiRoutes: Record<string, string> = {
+  'interview-proctoring-events': '/api/interviews/proctoring-events'
+};
 
 function resolveErrorMessage(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'message' in error) {
@@ -257,7 +276,7 @@ async function clearInvalidSession(): Promise<void> {
   }
 }
 
-async function ensureSignedIn(): Promise<void> {
+async function ensureSignedIn(): Promise<string> {
   const {
     data: { session }
   } = await supabase.auth.getSession();
@@ -265,6 +284,8 @@ async function ensureSignedIn(): Promise<void> {
   if (!session?.access_token) {
     throw new Error('登录状态已失效，请重新登录后再试');
   }
+
+  return session.access_token;
 }
 
 function assertRow<T>(data: T | null, error: unknown, fallback: string): T {
@@ -275,7 +296,53 @@ function assertRow<T>(data: T | null, error: unknown, fallback: string): T {
 }
 
 async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): Promise<TResponse> {
-  await ensureSignedIn();
+  let accessToken = await ensureSignedIn();
+
+  const fastApiRoute = fastApiRoutes[fnName];
+  if (fastApiRoute) {
+    const invokeFastApiRoute = async (token: string) =>
+      fetch(`/api-fast${fastApiRoute}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+    let response = await invokeFastApiRoute(accessToken);
+    if (response.ok) {
+      return (await response.json()) as TResponse;
+    }
+
+    let detail = await resolveFunctionErrorDetail({ context: response }, `Invoke ${fnName} failed`);
+    if (isJwtAuthError(detail)) {
+      const {
+        data: { session: refreshedSession },
+        error: refreshError
+      } = await supabase.auth.refreshSession();
+
+      if (!refreshError && refreshedSession?.access_token) {
+        accessToken = refreshedSession.access_token;
+        response = await invokeFastApiRoute(accessToken);
+        if (response.ok) {
+          return (await response.json()) as TResponse;
+        }
+        detail = await resolveFunctionErrorDetail({ context: response }, `Invoke ${fnName} failed`);
+      }
+
+      await clearInvalidSession();
+      if (typeof window !== 'undefined') {
+        window.setTimeout(() => {
+          window.location.assign('/login');
+        }, 0);
+      }
+
+      throw new Error(`登录凭证失效，已自动清理本地登录态，请重新登录后重试。${detail ? `（原始错误：${detail}）` : ''}`);
+    }
+
+    throw new Error(detail);
+  }
 
   const invoke = async () => supabase.functions.invoke(fnName, { body: payload });
 
@@ -459,7 +526,9 @@ export const interviewRuntimeEdge = {
   scoreInterview: <T = unknown>(payload: ScoreInterviewPayload) =>
     invokeEdgeFunction<T>('interview-score', payload),
   humanConfirm: <T = unknown>(payload: HumanConfirmPayload) =>
-    invokeEdgeFunction<T>('interview-human-confirm', payload)
+    invokeEdgeFunction<T>('interview-human-confirm', payload),
+  recordProctoringEvents: <T = unknown>(payload: RecordProctoringEventsPayload) =>
+    invokeEdgeFunction<T>('interview-proctoring-events', payload)
 };
 
 
