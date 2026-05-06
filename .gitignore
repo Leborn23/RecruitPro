@@ -17,6 +17,7 @@ __pycache__/
 tmp_*
 supabase/.temp/
 .superpowers/
+.worktrees/
 
 # Editor directories and files
 .vscode/*
