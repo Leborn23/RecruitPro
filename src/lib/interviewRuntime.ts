@@ -180,6 +180,23 @@ export interface ScoreInterviewPayload {
   sessionId: string;
 }
 
+export interface ProctoringEventInput {
+  eventType: string;
+  severity: string;
+  confidence?: number | null;
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number;
+  snapshotPaths?: string[];
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface RecordProctoringEventsPayload {
+  interviewId: string;
+  sessionId: string;
+  events: ProctoringEventInput[];
+}
+
 export interface HumanConfirmPayload {
   interviewId: string;
   reportId: string;
@@ -280,6 +297,7 @@ async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): P
     'interview-turn': '/api/interviews/turn',
     'interview-finish': '/api/interviews/finish',
     'interview-score': '/api/interviews/score',
+    'interview-proctoring-events': '/api/interviews/proctoring-events',
     'interview-human-confirm': '/api/interviews/human-confirm'
   };
 
@@ -491,6 +509,8 @@ export const interviewRuntimeEdge = {
     invokeEdgeFunction<T>('interview-finish', payload),
   scoreInterview: <T = unknown>(payload: ScoreInterviewPayload) =>
     invokeEdgeFunction<T>('interview-score', payload),
+  recordProctoringEvents: <T = unknown>(payload: RecordProctoringEventsPayload) =>
+    invokeEdgeFunction<T>('interview-proctoring-events', payload),
   humanConfirm: <T = unknown>(payload: HumanConfirmPayload) =>
     invokeEdgeFunction<T>('interview-human-confirm', payload)
 };

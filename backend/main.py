@@ -35,6 +35,8 @@ from models import (
     PersistPhase1Payload,
     PositionPayload,
     PrepareInterviewPayload,
+    ProctoringEventPayload,
+    RecordProctoringEventsPayload,
     ResolveJobRequirementPayload,
     RoomPasswordPayload,
     SalaryMarketImportPayload,
@@ -49,6 +51,26 @@ from models import (
     UpsertInterviewReportPayload,
     UpsertInterviewSchedulePayload,
 )
+
+PROCTORING_EVENT_TYPES = {
+    "camera_denied",
+    "camera_closed",
+    "no_face",
+    "multiple_faces",
+    "off_screen_attention",
+    "page_hidden",
+    "window_blur",
+}
+PROCTORING_SEVERITIES = {"low", "medium", "high"}
+PROCTORING_EVENT_LABELS = {
+    "camera_denied": "摄像头权限被拒绝",
+    "camera_closed": "摄像头关闭",
+    "no_face": "未检测到人脸",
+    "multiple_faces": "多人入镜",
+    "off_screen_attention": "视线离屏",
+    "page_hidden": "页面隐藏",
+    "window_blur": "窗口失焦",
+}
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
@@ -711,6 +733,111 @@ def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[s
     }
 
 
+def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    grouped: dict[str, dict[str, Any]] = {}
+    snapshot_paths: list[str] = []
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        severity = normalize_text(event.get("severity"))
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+
+        event_type = normalize_text(event.get("event_type"))
+        label = PROCTORING_EVENT_LABELS.get(event_type, event_type or "未知监考事件")
+        group = grouped.setdefault(
+            event_type or "unknown",
+            {
+                "event_type": event_type or "unknown",
+                "label": label,
+                "count": 0,
+                "high_count": 0,
+                "medium_count": 0,
+                "low_count": 0,
+            },
+        )
+        group["count"] += 1
+        if severity in severity_counts:
+            group[f"{severity}_count"] += 1
+
+        raw_paths = event.get("snapshot_paths") if isinstance(event.get("snapshot_paths"), list) else []
+        for path in raw_paths:
+            text = normalize_text(path)
+            if text and len(snapshot_paths) < 12:
+                snapshot_paths.append(text)
+
+    high_count = severity_counts["high"]
+    medium_count = severity_counts["medium"]
+    low_count = severity_counts["low"]
+    event_count = high_count + medium_count + low_count
+    risk_score = min(100, high_count * 25 + medium_count * 10 + low_count * 3)
+    grouped_summary = sorted(grouped.values(), key=lambda item: (-int(item["count"]), str(item["label"])))
+
+    return {
+        "event_count": event_count,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "low_count": low_count,
+        "risk_score": risk_score,
+        "grouped_summary": grouped_summary,
+        "snapshot_paths": snapshot_paths,
+    }
+
+
+def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    event_count = int(to_number(summary.get("event_count"), 0))
+    if event_count <= 0:
+        return mapped
+
+    risk_score = int(to_number(summary.get("risk_score"), 0))
+    high_count = int(to_number(summary.get("high_count"), 0))
+    medium_count = int(to_number(summary.get("medium_count"), 0))
+    low_count = int(to_number(summary.get("low_count"), 0))
+    severity = "high" if high_count > 0 else ("medium" if medium_count > 0 else "low")
+    labels = [
+        f"{item.get('label')} x{item.get('count')}"
+        for item in summary.get("grouped_summary", [])
+        if isinstance(item, dict) and item.get("label") and item.get("count")
+    ]
+    message = (
+        f"监考风险：检测到{('、'.join(labels) if labels else '异常行为')}，"
+        f"共 {event_count} 次（高 {high_count} / 中 {medium_count} / 低 {low_count}）。"
+    )
+
+    risks = mapped.get("risks") if isinstance(mapped.get("risks"), list) else []
+    risks.append(
+        {
+            "type": "proctoring",
+            "severity": severity,
+            "message": message,
+            "event_count": event_count,
+        }
+    )
+    mapped["risks"] = risks
+
+    evidence = mapped.get("evidence") if isinstance(mapped.get("evidence"), list) else []
+    evidence_summary = "，".join(labels) if labels else message
+    evidence.append(
+        {
+            "type": "proctoring",
+            "summary": evidence_summary,
+            "grouped_summary": summary.get("grouped_summary", []),
+            "event_count": event_count,
+            "risk_score": risk_score,
+            "snapshot_paths": summary.get("snapshot_paths", []),
+        }
+    )
+    mapped["evidence"] = evidence
+
+    existing_risk_score = mapped.get("risk_score")
+    mapped["risk_score"] = max(int(to_number(existing_risk_score, 0)), risk_score)
+    if high_count > 0 or risk_score >= 40:
+        mapped["recommendation"] = "needs_review"
+    return mapped
+
+
 def is_placeholder_interview_report_summary(value: Any) -> bool:
     text = normalize_text(value).lower()
     return "waiting for human confirmation" in text or "waiting to generate" in text
@@ -815,6 +942,12 @@ class Database:
 
     def get_client(self, user_token: str | None = None) -> Client:
         base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
+        if user_token:
+            anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
+            client = create_client(base_url, anon_key)
+            client.postgrest.auth(user_token)
+            return client
+
         service_role_key = normalize_text(os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
         if service_role_key:
             if self.client is None:
@@ -823,8 +956,6 @@ class Database:
 
         anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
         client = create_client(base_url, anon_key)
-        if user_token:
-            client.postgrest.auth(user_token)
         return client
 
     @staticmethod
@@ -4267,6 +4398,73 @@ def finish_interview(payload: FinishInterviewPayload, authorization: str | None 
     }
 
 
+def normalize_proctoring_event(
+    event: ProctoringEventPayload,
+    interview_id: str,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    event_type = normalize_text(event.eventType)
+    if event_type not in PROCTORING_EVENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid proctoring event type")
+
+    severity = normalize_text(event.severity)
+    if severity not in PROCTORING_SEVERITIES:
+        raise HTTPException(status_code=400, detail="Invalid proctoring event severity")
+
+    snapshot_paths = [normalize_text(path) for path in event.snapshotPaths if normalize_text(path)][:3]
+    return {
+        "interview_id": interview_id,
+        "session_id": session_id,
+        "event_type": event_type,
+        "severity": severity,
+        "confidence": max(0.0, min(1.0, to_number(event.confidence, 0.5))),
+        "started_at": event.startedAt,
+        "ended_at": event.endedAt,
+        "duration_ms": max(0, int(to_number(event.durationMs, 0))),
+        "snapshot_paths": snapshot_paths,
+        "metadata": event.metadata or {},
+        "created_by": user_id,
+    }
+
+
+@app.post("/api/interviews/proctoring-events")
+def record_proctoring_events(
+    payload: RecordProctoringEventsPayload,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    user = require_user(authorization)
+    client = db.get_client(get_bearer_token(authorization))
+
+    session = db.first(
+        client.table("interview_sessions")
+        .select("id,interview_id")
+        .eq("id", payload.sessionId)
+        .limit(1)
+        .execute()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if str(session.get("interview_id")) != payload.interviewId:
+        raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    rows = [
+        normalize_proctoring_event(event, payload.interviewId, payload.sessionId, user["id"])
+        for event in payload.events[:20]
+    ]
+    inserted_count = 0
+    if rows:
+        inserted = db.many(client.table("interview_proctoring_events").insert(rows).execute())
+        inserted_count = len(inserted)
+
+    return {
+        "ok": True,
+        "interview_id": payload.interviewId,
+        "session_id": payload.sessionId,
+        "inserted_count": inserted_count,
+    }
+
+
 @app.post("/api/interviews/score")
 def score_interview(payload: ScoreInterviewPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     user = require_user(authorization)
@@ -4311,6 +4509,14 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
         if not isinstance(final_report, dict):
             raise HTTPException(status_code=502, detail="Agent did not return a final report for scoring")
     mapped = map_agent_report_to_interview_report(final_report)
+    proctoring_events = db.many(
+        client.table("interview_proctoring_events")
+        .select("event_type,severity,snapshot_paths,created_at")
+        .eq("session_id", payload.sessionId)
+        .order("created_at")
+        .execute()
+    )
+    mapped = merge_proctoring_into_report(mapped, build_proctoring_summary(proctoring_events))
     report = db.first(
         client.table("interview_reports")
         .upsert(
