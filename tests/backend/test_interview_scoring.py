@@ -169,6 +169,59 @@ class InterviewProctoringEventsTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(len(fake_db._client._tables["interview_proctoring_events"]), 0)
 
+    def test_record_proctoring_events_accepts_schema_only_camera_denied_event(self) -> None:
+        fake_db = _FakeDB(
+            {
+                "interview_sessions": [{"id": "session-1", "interview_id": "interview-1"}],
+                "interview_proctoring_events": [],
+            }
+        )
+        payload = main.RecordProctoringEventsPayload(
+            interviewId="interview-1",
+            sessionId="session-1",
+            events=[
+                main.ProctoringEventPayload(
+                    eventType="camera_denied",
+                    severity="high",
+                    startedAt="2026-05-06T10:00:00Z",
+                )
+            ],
+        )
+
+        with patch.object(main, "require_user", return_value={"id": "user-1"}), patch.object(main, "db", fake_db):
+            response = main.record_proctoring_events(payload, "Bearer token")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["inserted_count"], 1)
+        inserted = fake_db._client._tables["interview_proctoring_events"][0]
+        self.assertEqual(inserted["event_type"], "camera_denied")
+
+    def test_record_proctoring_events_rejects_implementation_only_face_missing_event(self) -> None:
+        fake_db = _FakeDB(
+            {
+                "interview_sessions": [{"id": "session-1", "interview_id": "interview-1"}],
+                "interview_proctoring_events": [],
+            }
+        )
+        payload = main.RecordProctoringEventsPayload(
+            interviewId="interview-1",
+            sessionId="session-1",
+            events=[
+                main.ProctoringEventPayload(
+                    eventType="face_missing",
+                    severity="high",
+                    startedAt="2026-05-06T10:00:00Z",
+                )
+            ],
+        )
+
+        with patch.object(main, "require_user", return_value={"id": "user-1"}), patch.object(main, "db", fake_db):
+            with self.assertRaises(HTTPException) as raised:
+                main.record_proctoring_events(payload, "Bearer token")
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(len(fake_db._client._tables["interview_proctoring_events"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

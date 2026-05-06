@@ -53,13 +53,13 @@ from models import (
 )
 
 PROCTORING_EVENT_TYPES = {
-    "multiple_faces",
+    "camera_denied",
+    "camera_closed",
     "no_face",
-    "face_missing",
-    "looking_away",
-    "tab_switch",
-    "audio_anomaly",
-    "network_issue",
+    "multiple_faces",
+    "off_screen_attention",
+    "page_hidden",
+    "window_blur",
 }
 PROCTORING_SEVERITIES = {"low", "medium", "high"}
 
