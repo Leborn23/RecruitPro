@@ -1,0 +1,12 @@
+{
+  "case_id": "expert_rag",
+  "expected_fit_score": 95,
+  "expected_focus_areas": ["RAG architecture optimization", "Vector DB choice/tuning", "Evaluation strategies (Ragas)"],
+  "expected_recommendation": "Strong Hire",
+  "risk_level": "Low",
+  "rubric": {
+    "technical_depth": "High",
+    "experience_match": "Expert",
+    "potential_red_flags": "None"
+  }
+}

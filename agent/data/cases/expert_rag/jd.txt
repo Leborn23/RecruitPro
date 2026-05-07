@@ -1,0 +1,10 @@
+### JD: Senior AI Platform Engineer (RAG Specialists)
+Role: Design and implement high-performance retrieval-augmented generation pipelines for enterprise knowledge bases.
+Required Skills:
+- Deep expertise in LangChain or LlamaIndex.
+- Experience with Vector Databases (Pinecone, Weaviate, or Milvus).
+- Strong understanding of hybrid search (BM25 + Semantic).
+- Proficiency in RAG evaluation (Ragas, TruLens).
+- Distributed systems and API design (FastAPI).
+- 5+ years of software engineering experience.
+- Track record of deploying LLM apps to production.

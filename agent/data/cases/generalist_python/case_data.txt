@@ -1,0 +1,21 @@
+### JD: Fullstack AI Engineer (Agents focus)
+Role: Developing dynamic AI agent workflows with LangGraph and FastAPI.
+Required Skills:
+- Proficiency in Python/FastAPI.
+- Knowledge of LangGraph/State Management.
+- Experience with Pydantic and JSON Schema.
+- Prompt Engineering.
+- 3+ years of professional backend experience.
+- Unit testing (pytest).
+
+---
+
+### Resume: Jamie Smith (Software Engineer)
+Summary: 4 years of experience in backend development using Python/Django and FastAPI. Strong focus on REST API design.
+- Built a multi-tenant payment processing system with FastAPI.
+- Deep experience in PostgreSQL and Redis.
+- Recently started using OpenAI API for simple text summarization.
+- Familiar with Pytest and CI/CD pipelines.
+- BSc in Software Engineering, MIT.
+- (Drafting an article on "Introduction to AI Agents in 2024").
+- No direct experience with LangGraph yet, but rapid learner.

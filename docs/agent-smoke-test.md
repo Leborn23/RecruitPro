@@ -5,7 +5,7 @@ Use this file to verify the external agent and the RecruitPro FastAPI integratio
 ## 1. Start the agent service
 
 ```powershell
-cd D:\project\agent\recruitment-agent
+cd D:\project\RecruitPro_\agent
 .\.venv\Scripts\python.exe -m uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
 

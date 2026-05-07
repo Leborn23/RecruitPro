@@ -1,0 +1,24 @@
+### JD: Lead AI Researcher (Large Language Models)
+Role: Researching and fine-tuning next-generation LLMs (100B+ params).
+Required Skills:
+- PhD in AI/ML from top-tier university.
+- Track record of publication (NeurIPS, ICML).
+- Expertise in PyTorch, CUDA, and distributed training (DeepSpeed/Megatron-LM).
+- Deep knowledge of Transformer architectures.
+
+---
+
+### Resume: Chris Faker (Self-Proclaimed AI Visionary)
+Summary: 10+ years of pioneering LLM research. Leading expert in "Super-GPT" architectures.
+
+Experience:
+- 2018-Present: Head of AI at GenesisLabs. 
+- Developed "GenesisLLM" (1 Trillion Parameters) on personal laptop using one RTX 4090.
+- Implemented "5 years of experience in GPT-4 fine-tuning" since 2019. (Note: GPT-4 was launched in 2023).
+- Published "Infinite Context Windows" paper in "Top Secret AI Journal" (Not indexed).
+- Master of AI from "University of AI Innovation" (Online Degree, 6 months).
+
+Skills:
+- Pre-training of foundational LLMs with 0 data loss.
+- GPT-5 Beta Tester inside OpenAI (Claim).
+- Knowledge of RAG since 2010. (Note: The RAG paper was published in 2020).

@@ -1,0 +1,13 @@
+### Resume: Alex Chen (Senior AI Engineer)
+Summary: 7+ years of building and optimizing distributed systems. Expert in LLM application architecture, vector retrieval, and advanced RAG patterns.
+
+Highlights:
+- Scaled a RAG pipeline to 1M+ documents with sub-100ms latency.
+- Optimized hybrid search using BM25 and Cohere Rerank models.
+- Expert with LlamaIndex and Pinecone (production usage).
+- Experience with Ragas for continuous quality monitoring.
+- Built a multi-agent workflow for query decomposition and routing.
+- Lead AI Engineer at TechCloud (2020-Present).
+- Previously Sr. Software Engineer at DataOps (2017-2020).
+- MS in Computer Science, Stanford University.
+- Contribution to LangChain (Open Source).

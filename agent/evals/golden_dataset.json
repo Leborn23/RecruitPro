@@ -1,0 +1,44 @@
+[
+  {
+    "test_id": "expert_rag_001",
+    "description": "High-tier RAG specialist with valid production experience.",
+    "input": {
+      "resume_file": "data/cases/expert_rag/resume.txt",
+      "jd_file": "data/cases/expert_rag/jd.txt"
+    },
+    "expected_output": {
+      "hire_recommendation": "Strong Hire",
+      "overall_score_min": 90,
+      "overall_score_max": 100,
+      "risk_level": "Low"
+    }
+  },
+  {
+    "test_id": "generalist_python_002",
+    "description": "Strong Python dev, lacking specific LGraph context.",
+    "input": {
+      "resume_file": "data/cases/generalist_python/case_data.txt",
+      "jd_file": "data/cases/generalist_python/case_data.txt"
+    },
+    "expected_output": {
+      "hire_recommendation": "Lean Hire",
+      "overall_score_min": 65,
+      "overall_score_max": 80,
+      "risk_level": "Medium"
+    }
+  },
+  {
+    "test_id": "risk_hallucinator_003",
+    "description": "Candidate claiming impossible years of experience in GPT-4.",
+    "input": {
+      "resume_file": "data/cases/risk_inconsistent/case_data.txt",
+      "jd_file": "data/cases/risk_inconsistent/case_data.txt"
+    },
+    "expected_output": {
+      "hire_recommendation": "No Hire",
+      "overall_score_min": 0,
+      "overall_score_max": 40,
+      "risk_level": "High"
+    }
+  }
+]

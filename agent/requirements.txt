@@ -1,0 +1,24 @@
+# Core Orchestration
+langgraph>=1.1.0
+langgraph-checkpoint-sqlite>=3.0.3
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+
+# Type Safety & Models
+pydantic>=2.0
+
+# LLM Gateway
+openai>=1.40.0
+langsmith>=0.1.125
+anthropic>=0.30.0
+google-generativeai>=0.7.0
+pypdf>=4.0.0
+
+# Showcase & UI
+streamlit>=1.35.0
+python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Testing & Dev
+pytest>=8.0.0

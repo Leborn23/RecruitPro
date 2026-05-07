@@ -1,0 +1,11 @@
+# Edge Case 1: Junior Overachiever
+- Name: Jordan Early
+- Experience: 1 year of professional development (graduated 2023).
+- Projects: Contributed extensively to LangGraph open-source repo, built a custom state reducer, 400+ stars on a personal Agent framework.
+- Goal: Test if the Agent prioritizes "years of experience" or "actual technical evidence".
+
+# Edge Case 2: Keyword Stuffer
+- Name: Buzzword Bill
+- Experience: "Experienced AI/ML/DL/RAG/AutoGPT/Agent/Python/Java/Ruby/Rust/CUDA/LLM/Transformer/BERT/Transformer-XL Expert".
+- Projects: None detailed. Just a list of 50 keywords in the 'Skills' section.
+- Goal: Test if the Parser can find substance or labels it as "High Ambiguity".
