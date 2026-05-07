@@ -290,21 +290,19 @@ function resolveFastApiBaseUrls(baseUrl: string): string[] {
   const normalized = baseUrl.trim().replace(/\/$/, '');
   if (!normalized) return [];
 
-  const urls = [normalized];
   try {
     const parsed = new URL(normalized);
-    if (parsed.hostname === '127.0.0.1') {
-      parsed.hostname = 'localhost';
-      urls.push(parsed.toString().replace(/\/$/, ''));
-    } else if (parsed.hostname === 'localhost') {
-      parsed.hostname = '127.0.0.1';
-      urls.push(parsed.toString().replace(/\/$/, ''));
+    const appHost = typeof window !== 'undefined' ? window.location.hostname : '';
+    const isLocalApiHost = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+    const isLocalAppHost = appHost === '127.0.0.1' || appHost === 'localhost';
+    if (isLocalApiHost && isLocalAppHost) {
+      return ['/api-fast'];
     }
   } catch {
-    return urls;
+    return [normalized];
   }
 
-  return [...new Set(urls)];
+  return [normalized];
 }
 
 async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): Promise<TResponse> {
