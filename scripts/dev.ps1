@@ -1,3 +1,7 @@
+param(
+  [switch]$ResetAgentState
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -57,6 +61,15 @@ if ($uvicornCheckExitCode -ne 0) {
 Stop-Port 8000
 Stop-Port 8010
 Stop-Port 5173
+
+if ($ResetAgentState) {
+  Remove-Item -LiteralPath `
+    (Join-Path $agentDir "artifacts\checkpoints\interview.sqlite"), `
+    (Join-Path $agentDir "artifacts\checkpoints\interview.sqlite-shm"), `
+    (Join-Path $agentDir "artifacts\checkpoints\interview.sqlite-wal") `
+    -Force `
+    -ErrorAction SilentlyContinue
+}
 
 $agentEnv = @{
   AGENT_MODE = "demo"
