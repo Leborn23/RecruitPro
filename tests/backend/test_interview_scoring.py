@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from fastapi import HTTPException
+import httpx
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -15,6 +16,20 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from backend import main  # noqa: E402
+
+
+class AgentFetchTest(unittest.TestCase):
+    def test_agent_fetch_converts_connection_error_to_502(self) -> None:
+        request = httpx.Request("POST", "http://127.0.0.1:8000/agent/start")
+        with patch.dict(main.os.environ, {"AGENT_BASE_URL": "http://127.0.0.1:8000"}), patch(
+            "httpx.Client.request",
+            side_effect=httpx.ConnectError("connection refused", request=request),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.agent_fetch("/agent/start", {"session_id": "session-1"})
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Agent service unavailable", str(raised.exception.detail))
 
 
 class _FakeQuery:

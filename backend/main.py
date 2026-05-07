@@ -1421,8 +1421,13 @@ def agent_fetch(path: str, payload: dict[str, Any] | None = None, method: str = 
     if shared_secret:
         headers["x-agent-secret"] = shared_secret
     timeout = float(os.getenv("AGENT_TIMEOUT_MS", "20000")) / 1000
-    with httpx.Client(timeout=timeout, trust_env=False) as client:
-        response = client.request(method, f"{base_url}{path}", headers=headers, json=payload)
+    try:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
+            response = client.request(method, f"{base_url}{path}", headers=headers, json=payload)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=502, detail=f"Agent service timed out: {base_url}") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Agent service unavailable: {base_url}") from exc
     if response.status_code >= 400:
         detail = ""
         try:
