@@ -58,6 +58,11 @@ PROCTORING_EVENT_TYPES = {
     "no_face",
     "multiple_faces",
     "off_screen_attention",
+    "head_turned_left",
+    "head_turned_right",
+    "head_down",
+    "head_up",
+    "face_occluded",
     "page_hidden",
     "window_blur",
 }
@@ -67,7 +72,12 @@ PROCTORING_EVENT_LABELS = {
     "camera_closed": "摄像头关闭",
     "no_face": "未检测到人脸",
     "multiple_faces": "多人入镜",
-    "off_screen_attention": "视线离屏",
+    "off_screen_attention": "人脸不完整或离开画面",
+    "head_turned_left": "头部长时间偏左",
+    "head_turned_right": "头部长时间偏右",
+    "head_down": "长时间低头",
+    "head_up": "长时间抬头",
+    "face_occluded": "人脸关键点遮挡",
     "page_hidden": "页面隐藏",
     "window_blur": "窗口失焦",
 }
@@ -764,6 +774,7 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             group[f"{severity}_count"] += 1
 
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        head_pose = metadata.get("head_pose") if isinstance(metadata.get("head_pose"), dict) else {}
         detail = {
             "event_type": event_type or "unknown",
             "label": label,
@@ -773,6 +784,13 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             "face_count": int(to_number(metadata.get("face_count"), 0)) if metadata.get("face_count") is not None else None,
             "face_score": to_number(metadata.get("face_score"), None),
             "attention_signal": normalize_text(metadata.get("attention_signal")),
+            "pose_signal": normalize_text(metadata.get("pose_signal")),
+            "head_pose": {
+                "yaw": to_number(head_pose.get("yaw"), None),
+                "pitch": to_number(head_pose.get("pitch"), None),
+                "roll": to_number(head_pose.get("roll"), None),
+            },
+            "landmark_count": int(to_number(metadata.get("landmark_count"), 0)) if metadata.get("landmark_count") is not None else None,
             "started_at": event.get("started_at"),
             "ended_at": event.get("ended_at"),
         }

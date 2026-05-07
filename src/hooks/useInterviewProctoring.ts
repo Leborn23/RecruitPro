@@ -43,6 +43,21 @@ type DetectedFace = {
   box?: unknown;
   keypoints?: unknown[];
   score?: number;
+  landmarks?: FaceLandmark[];
+  pose?: HeadPose;
+};
+
+type FaceLandmark = {
+  x: number;
+  y: number;
+  z?: number;
+  visibility?: number;
+};
+
+type HeadPose = {
+  yaw: number;
+  pitch: number;
+  roll: number;
 };
 
 type FaceBounds = {
@@ -70,6 +85,9 @@ type ActiveTimedEvent = {
 
 const POLL_INTERVAL_MS = 300;
 const IMMEDIATE_EVENT_TYPES = new Set<ProctoringEventType>(['camera_closed', 'window_blur']);
+const HEAD_YAW_THRESHOLD = 28;
+const HEAD_PITCH_DOWN_THRESHOLD = -16;
+const HEAD_PITCH_UP_THRESHOLD = 18;
 
 function resolveErrorMessage(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'message' in error) {
@@ -138,6 +156,153 @@ function readFaceBounds(face: DetectedFace): FaceBounds | null {
     yMin: Math.min(...points.map((point) => point.y)),
     xMax: Math.max(...points.map((point) => point.x)),
     yMax: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+function readLandmark(landmarks: FaceLandmark[], index: number): FaceLandmark | null {
+  const landmark = landmarks[index];
+  if (!landmark) return null;
+
+  const x = toFiniteNumber(landmark.x);
+  const y = toFiniteNumber(landmark.y);
+  if (x === null || y === null) return null;
+
+  return {
+    x,
+    y,
+    z: toFiniteNumber(landmark.z) ?? undefined,
+    visibility: toFiniteNumber(landmark.visibility) ?? undefined,
+  };
+}
+
+function estimateHeadPose(landmarks: FaceLandmark[]): HeadPose | null {
+  const leftEye = readLandmark(landmarks, 33);
+  const rightEye = readLandmark(landmarks, 263);
+  const nose = readLandmark(landmarks, 1);
+  const mouthLeft = readLandmark(landmarks, 61);
+  const mouthRight = readLandmark(landmarks, 291);
+  if (!leftEye || !rightEye || !nose || !mouthLeft || !mouthRight) return null;
+
+  const eyeCenterX = (leftEye.x + rightEye.x) / 2;
+  const eyeCenterY = (leftEye.y + rightEye.y) / 2;
+  const mouthCenterY = (mouthLeft.y + mouthRight.y) / 2;
+  const eyeDistance = Math.max(0.001, Math.abs(rightEye.x - leftEye.x));
+  const eyeToMouth = Math.max(0.001, mouthCenterY - eyeCenterY);
+
+  const yaw = ((nose.x - eyeCenterX) / eyeDistance) * 55;
+  const noseVerticalRatio = (nose.y - eyeCenterY) / eyeToMouth;
+  const pitch = (0.48 - noseVerticalRatio) * 70;
+  const roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x) * (180 / Math.PI);
+
+  return {
+    yaw: Number(yaw.toFixed(1)),
+    pitch: Number(pitch.toFixed(1)),
+    roll: Number(roll.toFixed(1)),
+  };
+}
+
+function landmarksToFace(landmarks: FaceLandmark[], frameWidth: number, frameHeight: number): DetectedFace | null {
+  const points = landmarks
+    .map((landmark) => {
+      const x = toFiniteNumber(landmark.x);
+      const y = toFiniteNumber(landmark.y);
+      return x !== null && y !== null ? { x: x * frameWidth, y: y * frameHeight } : null;
+    })
+    .filter((point): point is { x: number; y: number } => point !== null);
+
+  if (points.length === 0) return null;
+
+  const xMin = Math.min(...points.map((point) => point.x));
+  const yMin = Math.min(...points.map((point) => point.y));
+  const xMax = Math.max(...points.map((point) => point.x));
+  const yMax = Math.max(...points.map((point) => point.y));
+
+  return {
+    box: {
+      xMin,
+      yMin,
+      xMax,
+      yMax,
+      width: xMax - xMin,
+      height: yMax - yMin,
+    },
+    landmarks,
+    pose: estimateHeadPose(landmarks) ?? undefined,
+  };
+}
+
+function buildHeadPoseMetadata(face: DetectedFace | undefined): Record<string, unknown> {
+  if (!face?.pose) return {};
+
+  return {
+    head_pose: {
+      yaw: face.pose.yaw,
+      pitch: face.pose.pitch,
+      roll: face.pose.roll,
+    },
+    landmark_count: face.landmarks?.length ?? null,
+  };
+}
+
+function getPoseSignal(face: DetectedFace | undefined): {
+  signal: ProctoringEventType | null;
+  label: string;
+  metadata: Record<string, unknown>;
+} {
+  const metadata = buildHeadPoseMetadata(face);
+  if (!face) {
+    return { signal: null, label: '人脸已锁定', metadata };
+  }
+
+  if (face.landmarks && (!face.pose || face.landmarks.length < 120)) {
+    return {
+      signal: 'face_occluded',
+      label: '人脸关键点遮挡',
+      metadata: { ...metadata, pose_signal: 'face_occluded' },
+    };
+  }
+
+  const pose = face.pose;
+  if (!pose) {
+    return { signal: null, label: '人脸已锁定', metadata };
+  }
+
+  if (pose.yaw <= -HEAD_YAW_THRESHOLD) {
+    return {
+      signal: 'head_turned_left',
+      label: '头部偏左',
+      metadata: { ...metadata, pose_signal: 'head_turned_left' },
+    };
+  }
+
+  if (pose.yaw >= HEAD_YAW_THRESHOLD) {
+    return {
+      signal: 'head_turned_right',
+      label: '头部偏右',
+      metadata: { ...metadata, pose_signal: 'head_turned_right' },
+    };
+  }
+
+  if (pose.pitch <= HEAD_PITCH_DOWN_THRESHOLD) {
+    return {
+      signal: 'head_down',
+      label: '长时间低头',
+      metadata: { ...metadata, pose_signal: 'head_down' },
+    };
+  }
+
+  if (pose.pitch >= HEAD_PITCH_UP_THRESHOLD) {
+    return {
+      signal: 'head_up',
+      label: '长时间抬头',
+      metadata: { ...metadata, pose_signal: 'head_up' },
+    };
+  }
+
+  return {
+    signal: null,
+    label: '正对摄像头',
+    metadata: { ...metadata, pose_signal: 'head_forward' },
   };
 }
 
@@ -404,6 +569,26 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       return;
     }
 
+    if (activeEventsRef.current.has('face_occluded')) {
+      setRuntimeStatus('warning', '请保持面部无遮挡');
+      return;
+    }
+
+    if (activeEventsRef.current.has('head_down')) {
+      setRuntimeStatus('warning', '请不要长时间低头');
+      return;
+    }
+
+    if (activeEventsRef.current.has('head_up')) {
+      setRuntimeStatus('warning', '请保持正对摄像头');
+      return;
+    }
+
+    if (activeEventsRef.current.has('head_turned_left') || activeEventsRef.current.has('head_turned_right')) {
+      setRuntimeStatus('warning', '请保持正对摄像头');
+      return;
+    }
+
     if (activeEventsRef.current.has('off_screen_attention')) {
       setRuntimeStatus('warning', '人脸不完整或离开画面');
       return;
@@ -575,8 +760,11 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       }
 
       const faces = await detector.estimateFaces(video, { flipHorizontal: false });
-      const attention = getOffScreenAttentionMetadata(faces.length === 1 ? faces[0] : undefined, video.videoWidth, video.videoHeight);
-      const bounds = faces.length === 1 ? readFaceBounds(faces[0]) : null;
+      const singleFace = faces.length === 1 ? faces[0] : undefined;
+      const attention = getOffScreenAttentionMetadata(singleFace, video.videoWidth, video.videoHeight);
+      const pose = getPoseSignal(singleFace);
+      const hasPoseWarning = Boolean(pose.signal);
+      const bounds = singleFace ? readFaceBounds(singleFace) : null;
       if (bounds) {
         const faceWidth = bounds.xMax - bounds.xMin;
         const faceHeight = bounds.yMax - bounds.yMin;
@@ -585,8 +773,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
           y: bounds.yMin / video.videoHeight,
           width: faceWidth / video.videoWidth,
           height: faceHeight / video.videoHeight,
-          state: attention.offScreen ? 'warning' : 'normal',
-          label: attention.offScreen ? '人脸不完整' : '人脸已锁定',
+          state: attention.offScreen || hasPoseWarning ? 'warning' : 'normal',
+          label: attention.offScreen ? '人脸不完整' : pose.label,
         });
       } else {
         setFaceBox(null);
@@ -596,6 +784,26 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       await trackTimedCondition('off_screen_attention', faces.length === 1 && attention.offScreen, nowMs, {
         face_count: faces.length,
         ...attention.metadata,
+      });
+      await trackTimedCondition('head_turned_left', pose.signal === 'head_turned_left', nowMs, {
+        face_count: faces.length,
+        ...pose.metadata,
+      });
+      await trackTimedCondition('head_turned_right', pose.signal === 'head_turned_right', nowMs, {
+        face_count: faces.length,
+        ...pose.metadata,
+      });
+      await trackTimedCondition('head_down', pose.signal === 'head_down', nowMs, {
+        face_count: faces.length,
+        ...pose.metadata,
+      });
+      await trackTimedCondition('head_up', pose.signal === 'head_up', nowMs, {
+        face_count: faces.length,
+        ...pose.metadata,
+      });
+      await trackTimedCondition('face_occluded', pose.signal === 'face_occluded', nowMs, {
+        face_count: faces.length,
+        ...pose.metadata,
       });
       refreshReadyStatus(nowMs);
     } catch (error) {
@@ -676,8 +884,39 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function createDetector(): Promise<Detector> {
-    const { FaceDetector, FilesetResolver } = await import('@mediapipe/tasks-vision');
+    const { FaceDetector, FaceLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision');
     const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm');
+    try {
+      const landmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task',
+        },
+        runningMode: 'VIDEO',
+        numFaces: 3,
+        minFaceDetectionConfidence: 0.5,
+        minFacePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: true,
+      });
+
+      return {
+        async estimateFaces(video: HTMLVideoElement) {
+          const result = landmarker.detectForVideo(video, performance.now());
+          return result.faceLandmarks
+            .map((landmarks) => landmarksToFace(landmarks, video.videoWidth, video.videoHeight))
+            .filter((face): face is DetectedFace => face !== null);
+        },
+        reset() {},
+        dispose() {
+          landmarker.close();
+        },
+      };
+    } catch {
+      // Fall back to face detection when the heavier landmark model is unavailable.
+    }
+
     const detector = await FaceDetector.createFromOptions(vision, {
       baseOptions: {
         modelAssetPath:

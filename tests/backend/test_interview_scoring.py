@@ -222,6 +222,41 @@ class InterviewProctoringEventsTest(unittest.TestCase):
         inserted = fake_db._client._tables["interview_proctoring_events"][0]
         self.assertEqual(inserted["event_type"], "camera_denied")
 
+    def test_record_proctoring_events_accepts_head_pose_event_metadata(self) -> None:
+        fake_db = _FakeDB(
+            {
+                "interview_sessions": [{"id": "session-1", "interview_id": "interview-1"}],
+                "interview_proctoring_events": [],
+            }
+        )
+        payload = main.RecordProctoringEventsPayload(
+            interviewId="interview-1",
+            sessionId="session-1",
+            events=[
+                main.ProctoringEventPayload(
+                    eventType="head_turned_right",
+                    severity="medium",
+                    confidence=0.88,
+                    startedAt="2026-05-06T10:00:00Z",
+                    endedAt="2026-05-06T10:00:04Z",
+                    durationMs=4000,
+                    metadata={
+                        "pose_signal": "head_turned_right",
+                        "head_pose": {"yaw": 34, "pitch": -4, "roll": 2},
+                        "landmark_count": 478,
+                    },
+                )
+            ],
+        )
+
+        with patch.object(main, "require_user", return_value={"id": "user-1"}), patch.object(main, "db", fake_db):
+            response = main.record_proctoring_events(payload, "Bearer token")
+
+        self.assertTrue(response["ok"])
+        inserted = fake_db._client._tables["interview_proctoring_events"][0]
+        self.assertEqual(inserted["event_type"], "head_turned_right")
+        self.assertEqual(inserted["metadata"]["head_pose"]["yaw"], 34)
+
     def test_record_proctoring_events_rejects_implementation_only_face_missing_event(self) -> None:
         fake_db = _FakeDB(
             {

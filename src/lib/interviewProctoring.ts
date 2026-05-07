@@ -4,6 +4,11 @@ export type ProctoringEventType =
   | 'no_face'
   | 'multiple_faces'
   | 'off_screen_attention'
+  | 'head_turned_left'
+  | 'head_turned_right'
+  | 'head_down'
+  | 'head_up'
+  | 'face_occluded'
   | 'page_hidden'
   | 'window_blur';
 
@@ -51,6 +56,11 @@ const TIMED_EVENT_THRESHOLDS_MS: Partial<Record<ProctoringEventType, number>> = 
   no_face: 800,
   multiple_faces: 800,
   off_screen_attention: 1000,
+  head_turned_left: 3000,
+  head_turned_right: 3000,
+  head_down: 3000,
+  head_up: 3000,
+  face_occluded: 1500,
   page_hidden: 10000,
 };
 
@@ -59,7 +69,12 @@ const EVENT_LABELS: Record<ProctoringEventType, string> = {
   camera_closed: '摄像头关闭',
   no_face: '未检测到人脸',
   multiple_faces: '多人入镜',
-  off_screen_attention: '视线离开屏幕',
+  off_screen_attention: '人脸不完整或离开画面',
+  head_turned_left: '头部长时间偏左',
+  head_turned_right: '头部长时间偏右',
+  head_down: '长时间低头',
+  head_up: '长时间抬头',
+  face_occluded: '人脸关键点遮挡',
   page_hidden: '页面离开',
   window_blur: '窗口失焦',
 };
@@ -93,7 +108,16 @@ export function deriveProctoringSeverity(
   if (
     eventType === 'camera_denied' ||
     eventType === 'camera_closed' ||
-    eventType === 'multiple_faces'
+    eventType === 'multiple_faces' ||
+    (
+      (
+        eventType === 'head_turned_left' ||
+        eventType === 'head_turned_right' ||
+        eventType === 'head_down' ||
+        eventType === 'head_up'
+      ) &&
+      durationMs >= 6000
+    )
   ) {
     return 'high';
   }
@@ -101,6 +125,11 @@ export function deriveProctoringSeverity(
   if (
     eventType === 'no_face' ||
     eventType === 'off_screen_attention' ||
+    eventType === 'head_turned_left' ||
+    eventType === 'head_turned_right' ||
+    eventType === 'head_down' ||
+    eventType === 'head_up' ||
+    eventType === 'face_occluded' ||
     eventType === 'page_hidden'
   ) {
     return shouldOpenTimedEvent(eventType, durationMs) ? 'medium' : 'low';

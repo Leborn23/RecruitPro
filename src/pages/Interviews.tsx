@@ -96,6 +96,13 @@ type ProctoringTimelineItem = {
   faceCount: number | null;
   faceScore: number | null;
   attentionSignal: string;
+  poseSignal: string;
+  headPose: {
+    yaw: number | null;
+    pitch: number | null;
+    roll: number | null;
+  };
+  landmarkCount: number | null;
 };
 
 type RecommendationFilter = 'all' | 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending';
@@ -363,6 +370,25 @@ function toAttentionSignalLabel(value: string): string {
   return value;
 }
 
+function toPoseSignalLabel(value: string): string {
+  if (value === 'head_turned_left') return '头部向左偏转';
+  if (value === 'head_turned_right') return '头部向右偏转';
+  if (value === 'head_down') return '长时间低头';
+  if (value === 'head_up') return '长时间抬头';
+  if (value === 'face_occluded') return '人脸关键点遮挡';
+  if (value === 'head_forward') return '正对摄像头';
+  return value;
+}
+
+function readNumberOrNull(value: unknown): number | null {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function formatHeadPoseValue(value: number | null): string {
+  return value === null ? '-' : `${Math.round(value)}°`;
+}
+
 function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimelineItem[] {
   if (!report) return [];
 
@@ -375,6 +401,8 @@ function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimeli
       const durationMs = Number(detail.duration_ms ?? 0);
       const faceCount = detail.face_count == null ? null : Number(detail.face_count);
       const faceScore = detail.face_score == null ? null : Number(detail.face_score);
+      const rawHeadPose = isRecord(detail.head_pose) ? detail.head_pose : {};
+      const landmarkCount = readNumberOrNull(detail.landmark_count);
       timeline.push({
         label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
         severity: String(detail.severity ?? '').trim(),
@@ -384,6 +412,13 @@ function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimeli
         faceCount: Number.isFinite(faceCount) ? faceCount : null,
         faceScore: Number.isFinite(faceScore) ? faceScore : null,
         attentionSignal: String(detail.attention_signal ?? '').trim(),
+        poseSignal: String(detail.pose_signal ?? '').trim(),
+        headPose: {
+          yaw: readNumberOrNull(rawHeadPose.yaw),
+          pitch: readNumberOrNull(rawHeadPose.pitch),
+          roll: readNumberOrNull(rawHeadPose.roll),
+        },
+        landmarkCount,
       });
     }
   }
@@ -1634,6 +1669,14 @@ export default function Interviews() {
                           {item.faceCount !== null ? <span>人脸数：{item.faceCount}</span> : null}
                           {item.faceScore !== null ? <span>置信度：{Math.round(item.faceScore * 100)}%</span> : null}
                           {item.attentionSignal ? <span>{toAttentionSignalLabel(item.attentionSignal)}</span> : null}
+                          {item.poseSignal ? <span>头部信号：{toPoseSignalLabel(item.poseSignal)}</span> : null}
+                          {item.landmarkCount !== null ? <span>关键点：{item.landmarkCount}</span> : null}
+                          {item.headPose.yaw !== null || item.headPose.pitch !== null || item.headPose.roll !== null ? (
+                            <span>
+                              姿态：yaw {formatHeadPoseValue(item.headPose.yaw)} / pitch {formatHeadPoseValue(item.headPose.pitch)} / roll{' '}
+                              {formatHeadPoseValue(item.headPose.roll)}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     ))}
