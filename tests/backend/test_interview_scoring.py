@@ -32,6 +32,19 @@ class AgentFetchTest(unittest.TestCase):
         self.assertIn("Agent service unavailable", str(raised.exception.detail))
 
 
+class SupabaseAuthTest(unittest.TestCase):
+    def test_require_user_converts_supabase_timeout_to_502(self) -> None:
+        with patch.dict(main.os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_ANON_KEY": "anon"}), patch(
+            "httpx.get",
+            side_effect=httpx.ReadTimeout("timed out"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.require_user("Bearer token")
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.detail, "Supabase auth timed out")
+
+
 class _FakeQuery:
     def __init__(self, rows: list[dict[str, object]], table_name: str, tables: dict[str, list[dict[str, object]]]) -> None:
         self._rows = rows

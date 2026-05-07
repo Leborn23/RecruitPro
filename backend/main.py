@@ -13,7 +13,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 
 from models import (
     AdminPermissionsPayload,
@@ -976,22 +976,35 @@ class Database:
     def __init__(self) -> None:
         self.client: Client | None = None
 
+    @staticmethod
+    def create_supabase_client(base_url: str, key: str) -> Client:
+        return create_client(
+            base_url,
+            key,
+            options=ClientOptions(
+                postgrest_client_timeout=30,
+                storage_client_timeout=30,
+                function_client_timeout=30,
+                httpx_client=httpx.Client(timeout=30.0, trust_env=False, http2=False),
+            ),
+        )
+
     def get_client(self, user_token: str | None = None) -> Client:
         base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
         if user_token:
             anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
-            client = create_client(base_url, anon_key)
+            client = self.create_supabase_client(base_url, anon_key)
             client.postgrest.auth(user_token)
             return client
 
         service_role_key = normalize_text(os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
         if service_role_key:
             if self.client is None:
-                self.client = create_client(base_url, service_role_key)
+                self.client = self.create_supabase_client(base_url, service_role_key)
             return self.client
 
         anon_key = normalize_text(os.getenv("SUPABASE_ANON_KEY")) or env("VITE_SUPABASE_ANON_KEY")
-        client = create_client(base_url, anon_key)
+        client = self.create_supabase_client(base_url, anon_key)
         return client
 
     @staticmethod
@@ -1339,11 +1352,17 @@ def require_user(authorization: str | None) -> dict[str, Any]:
     token = get_bearer_token(authorization)
 
     base_url = os.getenv("SUPABASE_URL") or env("VITE_SUPABASE_URL")
-    response = httpx.get(
-        f"{base_url}/auth/v1/user",
-        headers=get_auth_headers(token),
-        timeout=10.0,
-    )
+    try:
+        response = httpx.get(
+            f"{base_url}/auth/v1/user",
+            headers=get_auth_headers(token),
+            timeout=15.0,
+            trust_env=False,
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=502, detail="Supabase auth timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Supabase auth unavailable") from exc
     if response.status_code >= 400:
         raise HTTPException(status_code=401, detail="Unauthorized")
     payload = response.json()
