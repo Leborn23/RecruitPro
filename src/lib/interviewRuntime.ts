@@ -281,6 +281,32 @@ function assertRow<T>(data: T | null, error: unknown, fallback: string): T {
   return data;
 }
 
+function isFetchNetworkError(error: unknown): boolean {
+  if (!(error instanceof TypeError)) return false;
+  return String(error.message ?? '').toLowerCase().includes('fetch');
+}
+
+function resolveFastApiBaseUrls(baseUrl: string): string[] {
+  const normalized = baseUrl.trim().replace(/\/$/, '');
+  if (!normalized) return [];
+
+  const urls = [normalized];
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.hostname === '127.0.0.1') {
+      parsed.hostname = 'localhost';
+      urls.push(parsed.toString().replace(/\/$/, ''));
+    } else if (parsed.hostname === 'localhost') {
+      parsed.hostname = '127.0.0.1';
+      urls.push(parsed.toString().replace(/\/$/, ''));
+    }
+  } catch {
+    return urls;
+  }
+
+  return [...new Set(urls)];
+}
+
 async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): Promise<TResponse> {
   const {
     data: { session }
@@ -303,29 +329,44 @@ async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): P
 
   const fastApiRoute = fastApiRoutes[fnName];
   if (fastApiBaseUrl && fastApiRoute) {
-    const response = await fetch(`${fastApiBaseUrl}${fastApiRoute}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    const text = await response.text();
-    let data: unknown = null;
-    if (text) {
+    const body = JSON.stringify(payload);
+    const requestErrors: string[] = [];
+    for (const baseUrl of resolveFastApiBaseUrls(fastApiBaseUrl)) {
+      const url = `${baseUrl}${fastApiRoute}`;
+      let response: Response;
       try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(text);
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json'
+          },
+          body
+        });
+      } catch (error) {
+        if (!isFetchNetworkError(error)) throw error;
+        requestErrors.push(`${url}: ${resolveErrorMessage(error, 'network error')}`);
+        continue;
       }
+
+      const text = await response.text();
+      let data: unknown = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(text);
+        }
+      }
+      if (!response.ok) {
+        const detail =
+          data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
+        throw new Error(detail || `Invoke ${fnName} failed (${response.status})`);
+      }
+      return data as TResponse;
     }
-    if (!response.ok) {
-      const detail =
-        data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
-      throw new Error(detail || `Invoke ${fnName} failed`);
-    }
-    return data as TResponse;
+
+    throw new Error(`${fnName} 请求后端失败：${requestErrors.join('；') || `${fastApiBaseUrl}${fastApiRoute}: Failed to fetch`}`);
   }
 
   const invoke = async () => supabase.functions.invoke(fnName, { body: payload });
