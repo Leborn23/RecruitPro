@@ -103,7 +103,9 @@ def decide_next_step(state: InterviewState) -> str:
     if last_eval and last_eval.missing_logic_elements:
         if "clarification_needed" in last_eval.missing_logic_elements:
             return "ask_next_question"
-        already_followed_up_for_this_question = len(answers) > len(asked)
+        current_question_index = len(asked) - 1
+        followed_up_question_indexes = state.get("followed_up_question_indexes", [])
+        already_followed_up_for_this_question = current_question_index in followed_up_question_indexes
         latest_question = asked[-1] if asked else ""
         is_experience_question = _is_experience_style_question(latest_question)
 

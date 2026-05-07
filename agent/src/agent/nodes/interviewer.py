@@ -55,6 +55,8 @@ def ask_follow_up_node(state: InterviewState) -> Dict[str, Any]:
     last_eval = state.get("last_evaluation")
     if not last_eval or not last_eval.missing_logic_elements:
         return {}
+    asked = state.get("asked_questions", [])
+    current_question_index = len(asked) - 1
 
     gaps_str = ", ".join(last_eval.missing_logic_elements)
     logger.info("Asking follow-up for gaps: %s", gaps_str)
@@ -72,7 +74,10 @@ def ask_follow_up_node(state: InterviewState) -> Dict[str, Any]:
     if conversational_follow_up and not conversational_follow_up.startswith(FOLLOW_UP_PREFIX):
         conversational_follow_up = f"{FOLLOW_UP_PREFIX} {conversational_follow_up}"
 
-    return {"messages": [AIMessage(content=conversational_follow_up)]}
+    return {
+        "messages": [AIMessage(content=conversational_follow_up)],
+        "followed_up_question_indexes": [current_question_index],
+    }
 
 
 def ask_clarification_node(state: InterviewState) -> Dict[str, Any]:

@@ -5,6 +5,7 @@ import {
   resolveTimedEventSession,
   shouldOpenTimedEvent,
   summarizeProctoringEvents,
+  summarizeScreenSwitchEvents,
   type ProctoringEventRow,
 } from '../../src/lib/interviewProctoring.ts';
 
@@ -17,7 +18,10 @@ assert.equal(deriveProctoringSeverity('head_turned_right', 2999), 'low');
 assert.equal(deriveProctoringSeverity('head_turned_right', 3000), 'medium');
 assert.equal(deriveProctoringSeverity('head_turned_right', 6000), 'high');
 assert.equal(deriveProctoringSeverity('face_occluded', 1500), 'medium');
+assert.equal(deriveProctoringSeverity('page_hidden', 1999), 'low');
+assert.equal(deriveProctoringSeverity('page_hidden', 2000), 'low');
 assert.equal(deriveProctoringSeverity('page_hidden', 12000), 'medium');
+assert.equal(deriveProctoringSeverity('window_blur', 30000), 'high');
 assert.equal(deriveProctoringSeverity('window_blur', 0), 'low');
 
 assert.equal(shouldOpenTimedEvent('no_face', 799), false);
@@ -31,7 +35,10 @@ assert.equal(shouldOpenTimedEvent('head_turned_left', 3000), true);
 assert.equal(shouldOpenTimedEvent('head_down', 3000), true);
 assert.equal(shouldOpenTimedEvent('face_occluded', 1499), false);
 assert.equal(shouldOpenTimedEvent('face_occluded', 1500), true);
-assert.equal(shouldOpenTimedEvent('page_hidden', 10000), true);
+assert.equal(shouldOpenTimedEvent('page_hidden', 1999), false);
+assert.equal(shouldOpenTimedEvent('page_hidden', 2000), true);
+assert.equal(shouldOpenTimedEvent('window_blur', 1999), false);
+assert.equal(shouldOpenTimedEvent('window_blur', 2000), true);
 
 assert.equal(resolveTimedEventSession(null, 'session-1'), null);
 assert.equal(resolveTimedEventSession('preview-session', 'session-1'), null);
@@ -86,5 +93,12 @@ assert.equal(summary.lowCount, 0);
 assert.equal(summary.riskScore, 35);
 assert.match(summary.summaryText, /多人入镜/);
 assert.match(summary.summaryText, /页面离开/);
+
+const screenSwitchSummary = summarizeScreenSwitchEvents(events);
+assert.equal(screenSwitchSummary.eventCount, 1);
+assert.equal(screenSwitchSummary.totalDurationMs, 10000);
+assert.equal(screenSwitchSummary.longestDurationMs, 10000);
+assert.equal(screenSwitchSummary.pageHiddenCount, 1);
+assert.equal(screenSwitchSummary.windowBlurCount, 0);
 
 console.log('interviewProctoring tests passed');

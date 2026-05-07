@@ -27,6 +27,14 @@ type InviteForm = {
 const defaultDatetimeLocal = () =>
   new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
+const datetimeLocalToIso = (value: string): string | null => {
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? raw : date.toISOString();
+};
+
 export default function InterviewInviteModal({ open, candidate, onClose, onSaved }: InterviewInviteModalProps) {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<InviteForm>({
@@ -59,7 +67,9 @@ export default function InterviewInviteModal({ open, candidate, onClose, onSaved
     if (!canSubmit || saving) return;
     setSaving(true);
 
-    const { error } = await supabase.from('upcoming_interviews').insert([{ ...form, candidate_id: candidate?.id ?? null }]);
+    const { error } = await supabase.from('upcoming_interviews').insert([
+      { ...form, schedule_time: datetimeLocalToIso(form.schedule_time), candidate_id: candidate?.id ?? null },
+    ]);
     setSaving(false);
 
     if (error) {
@@ -117,25 +127,14 @@ export default function InterviewInviteModal({ open, candidate, onClose, onSaved
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">时间</label>
-              <input
-                type="datetime-local"
-                value={form.schedule_time}
-                onChange={(e) => setForm((prev) => ({ ...prev, schedule_time: e.target.value }))}
-                className="w-full cursor-pointer rounded bg-surface-container-low px-3 py-2 text-sm outline-none transition-all focus:border-primary border border-transparent"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">面试官</label>
-              <input
-                type="text"
-                value={form.interviewer}
-                onChange={(e) => setForm((prev) => ({ ...prev, interviewer: e.target.value }))}
-                className="w-full rounded bg-surface-container-low px-3 py-2 text-sm outline-none transition-all focus:border-primary border border-transparent"
-              />
-            </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">时间</label>
+            <input
+              type="datetime-local"
+              value={form.schedule_time}
+              onChange={(e) => setForm((prev) => ({ ...prev, schedule_time: e.target.value }))}
+              className="w-full cursor-pointer rounded bg-surface-container-low px-3 py-2 text-sm outline-none transition-all focus:border-primary border border-transparent"
+            />
           </div>
 
           <div className="flex flex-col gap-1.5">

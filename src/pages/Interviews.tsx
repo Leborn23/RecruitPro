@@ -5,7 +5,7 @@ import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDur
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
 import { removeInterviewFromLocalState } from '../lib/interviewListState';
 import { normalizeReportText } from '../lib/reportText';
-import { Calendar, ChevronRight, Clock, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, Calendar, ChevronRight, Clock, FileText, ShieldCheck, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle, Maximize2, Minimize2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 type InterviewRow = {
@@ -88,6 +88,8 @@ type ProctoringSnapshotView = {
 };
 
 type ProctoringTimelineItem = {
+  eventType: string;
+  category: string;
   label: string;
   severity: string;
   startedAt: string;
@@ -105,9 +107,6 @@ type ProctoringTimelineItem = {
   landmarkCount: number | null;
 };
 
-type RecommendationFilter = 'all' | 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending';
-type ScoreBand = 'all' | 'lt60' | '60to79' | '80plus';
-type RiskBand = 'all' | 'low' | 'medium' | 'high';
 type SortBy = 'schedule_desc' | 'schedule_asc' | 'score_desc' | 'score_asc' | 'risk_desc' | 'updated_desc';
 
 const PROCTORING_BUCKET = 'interview-proctoring';
@@ -117,13 +116,6 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
   hold: '建议保留',
   needs_review: '建议复核',
   reject: '建议淘汰'
-};
-
-const SCORING_PROFILE_LABELS: Record<string, string> = {
-  general: '通用模板',
-  technical: '技术岗模板',
-  business: '业务岗模板',
-  leadership: '管理岗模板'
 };
 
 const DIMENSION_LABELS: Record<string, string> = {
@@ -157,6 +149,35 @@ const INSIGHT_TEXTS: Record<string, string> = {
 const defaultDatetimeLocal = () =>
   new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
+const toDatetimeLocalValue = (value: string | null | undefined): string => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return defaultDatetimeLocal();
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw.includes('T') ? raw.slice(0, 16) : defaultDatetimeLocal();
+
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+
+const datetimeLocalToIso = (value: string): string | null => {
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? raw : date.toISOString();
+};
+
+const formatScheduleDateTime = (value: string | null | undefined): string => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '待定排期';
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw.replace('T', ' ').slice(0, 16);
+
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 const defaultForm = (): InterviewForm => ({
   candidate_id: null,
   name: '',
@@ -189,11 +210,6 @@ function toRecommendationLabel(value?: string | null): string {
   return RECOMMENDATION_LABELS[key] ?? '建议复核';
 }
 
-function toScoringProfileLabel(value?: string | null): string {
-  const key = String(value ?? '').trim().toLowerCase();
-  return SCORING_PROFILE_LABELS[key] ?? '通用模板';
-}
-
 function toDimensionLabel(key: string): string {
   return DIMENSION_LABELS[key] ?? key;
 }
@@ -203,26 +219,10 @@ function toStatusLabel(value?: string | null): string {
   return STATUS_LABELS[key] ?? (key || '待开始');
 }
 
-function normalizeRecommendationKey(value?: string | null): RecommendationFilter {
+function normalizeRecommendationKey(value?: string | null): 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending' {
   const key = String(value ?? '').trim().toLowerCase();
   if (key === 'hire' || key === 'hold' || key === 'needs_review' || key === 'reject') return key;
   return 'pending';
-}
-
-function scoreBandOf(score?: number | null): ScoreBand {
-  const value = Number(score);
-  if (!Number.isFinite(value)) return 'all';
-  if (value < 60) return 'lt60';
-  if (value < 80) return '60to79';
-  return '80plus';
-}
-
-function riskBandOf(risk?: number | null): RiskBand {
-  const value = Number(risk);
-  if (!Number.isFinite(value)) return 'all';
-  if (value >= 70) return 'high';
-  if (value >= 40) return 'medium';
-  return 'low';
 }
 
 function formatMinutes(minutes: number): string {
@@ -232,20 +232,6 @@ function formatMinutes(minutes: number): string {
   if (hours > 0 && mins > 0) return `${hours}小时${mins}分钟`;
   if (hours > 0) return `${hours}小时`;
   return `${mins}分钟`;
-}
-
-function buildConclusionItems(report: ScoreReportView): string[] {
-  const result: string[] = [];
-  result.push(`建议结论：${toRecommendationLabel(report.recommendation)}`);
-  result.push(`综合得分：${report.overall_score ?? '-'} 分，风险分：${report.risk_score ?? '-'} 分`);
-  result.push(`有效回答：${report.answered_count ?? '-'} / ${report.question_count ?? '-'}`);
-  if (report.min_answer_required !== undefined) {
-    result.push(`最低有效回答要求：${report.min_answer_required ?? '-'}`);
-  }
-  if (report.scoring_profile) {
-    result.push(`评分模板：${toScoringProfileLabel(report.scoring_profile)}`);
-  }
-  return result;
 }
 
 function buildEvidenceItems(report: ScoreReportView): string[] {
@@ -269,7 +255,9 @@ function buildEvidenceItems(report: ScoreReportView): string[] {
     });
   }
 
-  const evidence = (report.evidence ?? []).filter((item) => item.type !== 'proctoring').slice(0, 3);
+  const evidence = (report.evidence ?? [])
+    .filter((item) => item.type !== 'proctoring' && item.type !== 'scoring_model')
+    .slice(0, 3);
   if (evidence.length === 0) return ['暂无可展示证据片段。'];
   return evidence.map((item) => `第 ${item.turn_no ?? '-'} 轮：${String(item.excerpt ?? '').trim() || '（无文本）'}`);
 }
@@ -297,6 +285,14 @@ function buildDeductionItems(report: ScoreReportView): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function getScoringModelEvidence(report: ScoreReportView | null): Record<string, unknown> | null {
+  if (!report) return null;
+  return (
+    report.evidence?.find((item): item is Record<string, unknown> => isRecord(item) && item.type === 'scoring_model') ??
+    null
+  );
 }
 
 function formatProctoringEvidence(item: unknown): string {
@@ -389,6 +385,17 @@ function formatHeadPoseValue(value: number | null): string {
   return value === null ? '-' : `${Math.round(value)}°`;
 }
 
+function formatDurationMs(value: number): string {
+  const totalSeconds = Math.max(0, Math.round(value / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+}
+
+function isScreenSwitchTimelineItem(item: ProctoringTimelineItem): boolean {
+  return item.category === 'screen_switch' || item.eventType === 'page_hidden' || item.eventType === 'window_blur';
+}
+
 function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimelineItem[] {
   if (!report) return [];
 
@@ -404,6 +411,8 @@ function getProctoringTimeline(report: ScoreReportView | null): ProctoringTimeli
       const rawHeadPose = isRecord(detail.head_pose) ? detail.head_pose : {};
       const landmarkCount = readNumberOrNull(detail.landmark_count);
       timeline.push({
+        eventType: String(detail.event_type ?? '').trim(),
+        category: String(detail.category ?? '').trim(),
         label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
         severity: String(detail.severity ?? '').trim(),
         startedAt: formatReportTime(detail.started_at),
@@ -612,9 +621,6 @@ export default function Interviews() {
 
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [decisionFilter, setDecisionFilter] = useState<RecommendationFilter>('all');
-  const [scoreBandFilter, setScoreBandFilter] = useState<ScoreBand>('all');
-  const [riskBandFilter, setRiskBandFilter] = useState<RiskBand>('all');
   const [reportOnlyFilter, setReportOnlyFilter] = useState(false);
   const [sortBy, setSortBy] = useState<SortBy>('schedule_desc');
 
@@ -622,10 +628,6 @@ export default function Interviews() {
   const interviewDurationMinutes = getInterviewDurationMinutesForQuestionCount(configuredQuestionCount);
   const stageSuggestions = useMemo(
     () => Array.from(new Set(interviews.map((item) => String(item.stage ?? '').trim()).filter(Boolean))).slice(0, 8),
-    [interviews]
-  );
-  const interviewerSuggestions = useMemo(
-    () => Array.from(new Set(interviews.map((item) => String(item.interviewer ?? '').trim()).filter(Boolean))).slice(0, 8),
     [interviews]
   );
   const locationSuggestions = useMemo(
@@ -643,7 +645,11 @@ export default function Interviews() {
       candidate_id: candidateId,
       name: candidate?.name ?? prev.name,
       position: position?.title ?? candidate?.title ?? prev.position,
-      location_type: position?.location?.trim() ? position.location : prev.location_type,
+      location_type: isRemote(prev.location_type)
+        ? prev.location_type
+        : position?.location?.trim()
+          ? position.location
+          : prev.location_type,
     }));
   };
 
@@ -924,21 +930,9 @@ export default function Interviews() {
 
     const filtered = interviewsWithReport.filter(({ interview, report }) => {
       const status = String(interview.status ?? '').trim().toLowerCase();
-      const decision = normalizeRecommendationKey(report?.recommendation);
 
       if (statusFilter !== 'all' && status !== statusFilter) return false;
-      if (decisionFilter !== 'all' && decision !== decisionFilter) return false;
       if (reportOnlyFilter && !report) return false;
-
-      if (scoreBandFilter !== 'all') {
-        const band = scoreBandOf(report?.overall_score);
-        if (band !== scoreBandFilter) return false;
-      }
-
-      if (riskBandFilter !== 'all') {
-        const band = riskBandOf(report?.risk_score);
-        if (band !== riskBandFilter) return false;
-      }
 
       if (!keyword) return true;
 
@@ -946,7 +940,6 @@ export default function Interviews() {
         interview.name,
         interview.position,
         interview.stage,
-        interview.interviewer,
         toStatusLabel(interview.status),
         toRecommendationLabel(report?.recommendation)
       ]
@@ -980,7 +973,7 @@ export default function Interviews() {
     });
 
     return sorted;
-  }, [interviewsWithReport, searchText, statusFilter, decisionFilter, scoreBandFilter, riskBandFilter, reportOnlyFilter, sortBy]);
+  }, [interviewsWithReport, searchText, statusFilter, reportOnlyFilter, sortBy]);
 
   useEffect(() => {
     if (visibleInterviews.length === 0) {
@@ -1025,7 +1018,11 @@ export default function Interviews() {
       ...prev,
       name: candidate.name || prev.name,
       position: position?.title ?? candidate.title ?? prev.position,
-      location_type: position?.location?.trim() ? position.location : prev.location_type,
+      location_type: isRemote(prev.location_type)
+        ? prev.location_type
+        : position?.location?.trim()
+          ? position.location
+          : prev.location_type,
     }));
   }, [candidateOptions, form.candidate_id, isModalOpen, positionOptions]);
 
@@ -1043,7 +1040,7 @@ export default function Interviews() {
       name: interview.name,
       stage: interview.stage || '',
       position: interview.position || '',
-      schedule_time: interview.schedule_time?.includes('T') ? interview.schedule_time : defaultDatetimeLocal(),
+      schedule_time: toDatetimeLocalValue(interview.schedule_time),
       interviewer: interview.interviewer || '',
       location_type: interview.location_type || ''
     });
@@ -1093,12 +1090,16 @@ export default function Interviews() {
 
     setSaving(true);
     let apiError: { message: string } | null = null;
+    const payload = {
+      ...form,
+      schedule_time: datetimeLocalToIso(form.schedule_time)
+    };
 
     if (editingId) {
-      const { error } = await supabase.from('upcoming_interviews').update(form).eq('id', editingId);
+      const { error } = await supabase.from('upcoming_interviews').update(payload).eq('id', editingId);
       apiError = error as { message: string } | null;
     } else {
-      const { error } = await supabase.from('upcoming_interviews').insert([form]);
+      const { error } = await supabase.from('upcoming_interviews').insert([payload]);
       apiError = error as { message: string } | null;
     }
 
@@ -1281,17 +1282,28 @@ export default function Interviews() {
   const selectedInterview = selectedInterviewEntry?.interview ?? null;
   const selectedReport = selectedInterviewEntry?.report;
   const selectedAction = selectedInterview ? getPrimaryAction(selectedInterview) : null;
-  const selectedStepStates = selectedInterview ? getStepStates(selectedInterview) : [];
   const selectedTimeRemaining = selectedInterview ? getTimeRemaining(selectedInterview.schedule_time) : null;
+  const activeInterviewRows = interviewsWithReport
+    .map(({ interview }) => interview)
+    .filter((interview) => String(interview.status ?? '').trim().toLowerCase() === 'in_progress');
   const reportProctoringTimeline = getProctoringTimeline(reportData);
+  const reportCameraTimeline = reportProctoringTimeline.filter((item) => !isScreenSwitchTimelineItem(item));
+  const reportScreenSwitchTimeline = reportProctoringTimeline.filter(isScreenSwitchTimelineItem);
+  const reportScoringModel = getScoringModelEvidence(reportData);
+  const reportAbilityScore = reportScoringModel?.ability_score ?? reportData?.overall_score ?? '-';
+  const reportRiskScore = reportScoringModel?.risk_score ?? reportData?.risk_score ?? '-';
+  const reportDecisionReason = typeof reportScoringModel?.decision_reason === 'string' ? reportScoringModel.decision_reason : '';
+  const reportSummaryParagraphs = reportData ? buildReportSummaryParagraphs(reportData) : [];
+  const reportDeductionItems = reportData ? buildDeductionItems(reportData) : [];
+  const reportEvidenceItems = reportData ? buildEvidenceItems(reportData) : [];
+  const reportDimensionEntries = reportData ? Object.entries(reportData.dimension_scores ?? {}) : [];
   const selectedSummaryItems = selectedInterview
     ? [
         { label: '候选人', value: selectedInterview.name || '待补充' },
         { label: '岗位', value: selectedInterview.position || '未关联岗位' },
-        { label: '面试官', value: selectedInterview.interviewer || '未指定' },
         {
           label: '排期时间',
-          value: selectedInterview.schedule_time?.replace('T', ' ').slice(0, 16) || '待安排'
+          value: formatScheduleDateTime(selectedInterview.schedule_time)
         }
       ]
     : [];
@@ -1499,20 +1511,9 @@ export default function Interviews() {
                   ))}
                 </datalist>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5 flex flex-col">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">排期时间</label>
-                  <input type="datetime-local" value={form.schedule_time} onChange={(e) => setForm({ ...form, schedule_time: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all cursor-pointer" />
-                </div>
-                <div className="space-y-1.5 flex flex-col">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">面试官</label>
-                  <input type="text" list="interviewer-options" value={form.interviewer} onChange={(e) => setForm({ ...form, interviewer: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all" />
-                  <datalist id="interviewer-options">
-                    {interviewerSuggestions.map((item) => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                </div>
+              <div className="space-y-1.5 flex flex-col">
+                <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">排期时间</label>
+                <input type="datetime-local" value={form.schedule_time} onChange={(e) => setForm({ ...form, schedule_time: e.target.value })} className="w-full bg-surface-container-low border border-transparent focus:border-primary px-3 py-2 rounded text-sm outline-none transition-all cursor-pointer" />
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">地点与形式</label>
@@ -1539,7 +1540,7 @@ export default function Interviews() {
       {reportModalOpen && reportData && (
         <div className={`fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center ${reportModalFullscreen ? 'p-0' : 'p-4'}`}>
           <div className={`bg-surface-container-lowest w-full shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col ${
-            reportModalFullscreen ? 'h-screen max-h-screen rounded-none' : 'max-w-2xl max-h-[90vh] rounded-xl'
+            reportModalFullscreen ? 'h-screen max-h-screen rounded-none' : 'max-w-5xl max-h-[92vh] rounded-xl'
           }`}>
             <div className="px-6 py-4 border-b border-outline-variant/15 flex justify-between items-center bg-surface-container-low/50">
               <h3 className="font-semibold text-on-surface">AI 评分报告 · {reportInterviewName}</h3>
@@ -1565,58 +1566,97 @@ export default function Interviews() {
               </div>
             </div>
 
-            <div className="p-6 space-y-5 flex-1 min-h-0 overflow-y-auto">
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <p className="text-xs text-on-surface-variant">总分</p>
-                    <p className="text-3xl font-bold text-on-surface">{reportData.overall_score ?? '-'}</p>
-                  </div>
-                  <span className="text-xs px-2.5 py-1 rounded border border-primary/20 bg-primary/10 text-primary tracking-wider font-semibold">
-                    {toRecommendationLabel(reportData.recommendation)}
-                  </span>
-                  <span className="text-xs text-on-surface-variant">风险评分: {reportData.risk_score ?? '-'}</span>
-                </div>
-
-              <div className="grid lg:grid-cols-3 gap-3 text-xs">
-                <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-3">
-                  <h4 className="text-sm font-semibold text-on-surface mb-2">结论</h4>
-                  <div className="space-y-1.5">
-                    {buildConclusionItems(reportData).map((line, idx) => (
-                      <p key={`conclusion-${idx}`} className="text-on-surface-variant">{line}</p>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-3">
-                  <h4 className="text-sm font-semibold text-on-surface mb-2">证据</h4>
-                  <div className="space-y-2">
-                    {buildEvidenceItems(reportData).map((line, idx) => (
-                      <p key={`evidence-${idx}`} className="text-on-surface-variant whitespace-pre-wrap">{line}</p>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-3">
-                  <h4 className="text-sm font-semibold text-on-surface mb-2">扣分原因</h4>
-                  <div className="space-y-2">
-                    {buildDeductionItems(reportData).map((line, idx) => (
-                      <p key={`deduction-${idx}`} className="text-on-surface-variant whitespace-pre-wrap">{line}</p>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h4 className="text-sm font-semibold text-on-surface mb-2">维度评分</h4>
-                <div className="grid sm:grid-cols-2 gap-2">
-                  {Object.entries(reportData.dimension_scores ?? {}).map(([dimension, score]) => (
-                    <div key={dimension} className="rounded border border-outline-variant/20 px-3 py-2 text-xs flex justify-between bg-surface-container-low">
-                      <span className="text-on-surface-variant">{toDimensionLabel(dimension)}</span>
-                      <span className="font-semibold text-on-surface">{score}</span>
+            <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-5">
+              <section className="rounded-xl border border-[#cddcf0] bg-white px-5 py-4 shadow-[0_12px_24px_-24px_rgba(15,23,42,0.24)]">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <h4 className="text-base font-semibold text-on-surface">综合评语</h4>
+                      <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">
+                        {toRecommendationLabel(reportData.recommendation)}
+                      </span>
                     </div>
-                  ))}
+                    <div className="mt-3 space-y-2">
+                      {(reportSummaryParagraphs.length > 0 ? reportSummaryParagraphs : ['当前报告暂无综合评语。']).map((paragraph, index) => (
+                        <p
+                          key={`report-summary-top-${index}`}
+                          className="text-sm leading-6 text-on-surface-variant whitespace-pre-wrap break-words"
+                        >
+                          {paragraph}
+                        </p>
+                      ))}
+                      {reportDecisionReason && !reportSummaryParagraphs.some((paragraph) => paragraph.includes(reportDecisionReason)) ? (
+                        <p className="text-sm leading-6 text-on-surface-variant whitespace-pre-wrap break-words">
+                          最终建议：{reportDecisionReason}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="grid w-full grid-cols-2 gap-2 text-xs sm:w-auto sm:min-w-[280px]">
+                    <div className="rounded-lg border border-[#d6e2f1] bg-[#f7fbff] px-3 py-2">
+                      <p className="text-[#6b86a4]">能力分</p>
+                      <p className="text-2xl font-bold leading-tight text-[#16355f]">{String(reportAbilityScore)}</p>
+                    </div>
+                    <div className="rounded-lg border border-[#efc1c8] bg-[#fff7f8] px-3 py-2">
+                      <p className="text-[#8e5c66]">风险分</p>
+                      <p className="text-2xl font-bold leading-tight text-[#b4233d]">{String(reportRiskScore)}</p>
+                    </div>
+                    <div className="rounded-lg border border-[#d6e2f1] bg-[#f7fbff] px-3 py-2">
+                      <p className="text-[#6b86a4]">有效回答</p>
+                      <p className="text-base font-semibold text-[#16355f]">{extractAnsweredProgress(reportData)}</p>
+                    </div>
+                    <div className="rounded-lg border border-[#d6e2f1] bg-[#f7fbff] px-3 py-2">
+                      <p className="text-[#6b86a4]">监考事件</p>
+                      <p className="text-base font-semibold text-[#16355f]">{reportProctoringTimeline.length}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </section>
+
+              <section className="grid gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                <div className="rounded-xl border border-outline-variant/20 bg-surface-container-low px-4 py-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-700" />
+                    <h4 className="text-sm font-semibold text-on-surface">扣分原因</h4>
+                  </div>
+                  <div className="space-y-2">
+                    {(reportDeductionItems.length > 0 ? reportDeductionItems : ['暂无明确扣分原因。']).map((line, idx) => (
+                      <p key={`deduction-${idx}`} className="text-sm leading-6 text-on-surface-variant whitespace-pre-wrap break-words">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-outline-variant/20 bg-surface-container-low px-4 py-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-primary" />
+                    <h4 className="text-sm font-semibold text-on-surface">关键证据</h4>
+                  </div>
+                  <div className="space-y-2">
+                    {reportEvidenceItems.map((line, idx) => (
+                      <p key={`evidence-${idx}`} className="text-sm leading-6 text-on-surface-variant whitespace-pre-wrap break-words">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {reportDimensionEntries.length > 0 ? (
+                <section>
+                  <h4 className="text-sm font-semibold text-on-surface mb-2">维度评分</h4>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {reportDimensionEntries.map(([dimension, score]) => (
+                      <div key={dimension} className="rounded-lg border border-outline-variant/20 px-3 py-2 text-xs flex justify-between bg-surface-container-low">
+                        <span className="text-on-surface-variant">{toDimensionLabel(dimension)}</span>
+                        <span className="font-semibold text-on-surface">{score}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
 
               {reportSnapshots.length > 0 ? (
                 <div>
@@ -1648,40 +1688,68 @@ export default function Interviews() {
               ) : null}
 
               {reportProctoringTimeline.length > 0 ? (
-                <div>
-                  <h4 className="text-sm font-semibold text-on-surface mb-2">监考时间线</h4>
-                  <div className="space-y-2">
-                    {reportProctoringTimeline.map((item, index) => (
-                      <div
-                        key={`proctoring-timeline-${index}-${item.startedAt}`}
-                        className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-semibold">
-                            {item.startedAt} - {item.endedAt} · {item.label}
-                          </span>
-                          <span className="rounded-full border border-amber-300 bg-white/70 px-2 py-0.5 text-[11px]">
-                            风险级别：{toSeverityLabel(item.severity)}
-                          </span>
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-amber-900">
-                          <span>持续：{Math.round(item.durationMs / 100) / 10}s</span>
-                          {item.faceCount !== null ? <span>人脸数：{item.faceCount}</span> : null}
-                          {item.faceScore !== null ? <span>置信度：{Math.round(item.faceScore * 100)}%</span> : null}
-                          {item.attentionSignal ? <span>{toAttentionSignalLabel(item.attentionSignal)}</span> : null}
-                          {item.poseSignal ? <span>头部信号：{toPoseSignalLabel(item.poseSignal)}</span> : null}
-                          {item.landmarkCount !== null ? <span>关键点：{item.landmarkCount}</span> : null}
-                          {item.headPose.yaw !== null || item.headPose.pitch !== null || item.headPose.roll !== null ? (
-                            <span>
-                              姿态：yaw {formatHeadPoseValue(item.headPose.yaw)} / pitch {formatHeadPoseValue(item.headPose.pitch)} / roll{' '}
-                              {formatHeadPoseValue(item.headPose.roll)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
+                <section className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-amber-800" />
+                      <h4 className="text-sm font-semibold text-amber-950">监控数据</h4>
+                    </div>
+                    <span className="rounded-full border border-amber-300 bg-white/80 px-2.5 py-0.5 text-[11px] font-medium text-amber-800">
+                      摄像头 {reportCameraTimeline.length} · 切屏 {reportScreenSwitchTimeline.length}
+                    </span>
                   </div>
-                </div>
+
+                  {reportScreenSwitchTimeline.length > 0 ? (
+                    <div className="mb-4">
+                      <p className="mb-2 text-xs font-semibold text-amber-950">切屏记录</p>
+                      <div className="space-y-2">
+                        {reportScreenSwitchTimeline.map((item, index) => (
+                          <div key={`screen-switch-timeline-${index}-${item.startedAt}`} className="rounded-lg border border-amber-300 bg-white/75 px-3 py-2 text-xs text-amber-950">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold">{item.startedAt} - {item.endedAt} · {item.label}</span>
+                              <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px]">
+                                {toSeverityLabel(item.severity)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-amber-800">持续：{formatDurationMs(item.durationMs)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {reportCameraTimeline.length > 0 ? (
+                    <div>
+                      <p className="mb-2 text-xs font-semibold text-amber-950">摄像头监考</p>
+                      <div className="space-y-2">
+                        {reportCameraTimeline.map((item, index) => (
+                          <div key={`camera-timeline-${index}-${item.startedAt}`} className="rounded-lg border border-amber-200 bg-white/75 px-3 py-2 text-xs text-amber-950">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold">{item.startedAt} - {item.endedAt} · {item.label}</span>
+                              <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px]">
+                                风险级别：{toSeverityLabel(item.severity)}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-amber-900">
+                              <span>持续：{formatDurationMs(item.durationMs)}</span>
+                              {item.faceCount !== null ? <span>人脸数：{item.faceCount}</span> : null}
+                              {item.faceScore !== null ? <span>置信度：{Math.round(item.faceScore * 100)}%</span> : null}
+                              {item.attentionSignal ? <span>{toAttentionSignalLabel(item.attentionSignal)}</span> : null}
+                              {item.poseSignal ? <span>头部信号：{toPoseSignalLabel(item.poseSignal)}</span> : null}
+                              {item.landmarkCount !== null ? <span>关键点：{item.landmarkCount}</span> : null}
+                              {item.headPose.yaw !== null || item.headPose.pitch !== null || item.headPose.roll !== null ? (
+                                <span>
+                                  姿态：yaw {formatHeadPoseValue(item.headPose.yaw)} / pitch {formatHeadPoseValue(item.headPose.pitch)} / roll{' '}
+                                  {formatHeadPoseValue(item.headPose.roll)}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
               ) : null}
 
               <div>
@@ -1756,21 +1824,6 @@ export default function Interviews() {
                   </div>
                 )}
               </div>
-
-                <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3">
-                  <h4 className="text-sm font-semibold text-on-surface mb-2">综合评语</h4>
-                  <div className="space-y-2">
-                    {buildReportSummaryParagraphs(reportData).map((paragraph, index) => (
-                      <p
-                        key={`report-summary-${index}`}
-                        className="text-xs leading-6 text-on-surface-variant whitespace-pre-wrap break-words"
-                      >
-                        {paragraph}
-                      </p>
-                    ))}
-                  </div>
-                </div>
-
               </div>
             </div>
           </div>
@@ -1792,12 +1845,11 @@ export default function Interviews() {
                 <input
                   value={searchText}
                   onChange={(e) => setSearchText(e.target.value)}
-                  placeholder="候选人 / 岗位 / 面试官"
+                  placeholder="候选人 / 岗位"
                   className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-sm text-[#16355f] outline-none transition focus:border-[#86aee7] focus:bg-white"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1.5">
                 <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">状态</label>
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
@@ -1808,39 +1860,6 @@ export default function Interviews() {
                   <option value="completed">已结束</option>
                 </select>
               </div>
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">AI结论</label>
-                <select value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value as RecommendationFilter)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
-                  <option value="all">全部</option>
-                  <option value="pending">待评分</option>
-                  <option value="hire">通过</option>
-                  <option value="hold">保留</option>
-                  <option value="needs_review">复核</option>
-                  <option value="reject">淘汰</option>
-                </select>
-              </div>
-            </div>
-
-              <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">总分区间</label>
-                <select value={scoreBandFilter} onChange={(e) => setScoreBandFilter(e.target.value as ScoreBand)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
-                  <option value="all">全部</option>
-                  <option value="80plus">80分及以上</option>
-                  <option value="60to79">60-79分</option>
-                  <option value="lt60">60分以下</option>
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">风险区间</label>
-                <select value={riskBandFilter} onChange={(e) => setRiskBandFilter(e.target.value as RiskBand)} className="w-full rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2.5 text-xs text-[#24476b] outline-none">
-                  <option value="all">全部</option>
-                  <option value="low">低风险</option>
-                  <option value="medium">中风险</option>
-                  <option value="high">高风险</option>
-                </select>
-              </div>
-            </div>
 
             <div className="space-y-1.5">
               <label className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b86a4]">排序</label>
@@ -1869,28 +1888,38 @@ export default function Interviews() {
           </section>
 
       <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
-            <h2 className="text-lg font-semibold text-[#16355f]">当前面试链路</h2>
-            <div className="mt-4 grid grid-cols-5 gap-2">
-              {selectedStepStates.length > 0 ? (
-                selectedStepStates.map((step) => (
-                  <div
-                    key={step.key}
-                    className={`rounded-2xl border px-2 py-3 text-center text-[11px] font-semibold ${
-                      step.state === 'done'
-                        ? 'border-[#c7daf6] bg-[#eef5ff] text-[#1f5fbf]'
-                        : step.state === 'active'
-                          ? 'border-[#f1d8de] bg-[#fff6f8] text-[#8e3550]'
-                          : 'border-[#d6e2f1] bg-[#f8fbff] text-[#6b86a4]'
-                    }`}
-                  >
-                    {step.label}
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b86a4]">Interview load</p>
+                <h2 className="mt-1 text-lg font-semibold text-[#16355f]">今日总人数 / 当前面试</h2>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex min-h-[88px] min-w-[100px] flex-col items-center justify-center rounded-[22px] border border-[#d6e2f1] bg-[#f8fbff] px-4 py-3 text-center">
+                  <p className="text-[11px] font-semibold text-[#56718f]">今日总人数</p>
+                  <p className="mt-1 text-4xl font-semibold leading-none text-[#16355f]">{heroDensityStats.todayInterviews}</p>
+                </div>
+                <div className="flex min-h-[88px] min-w-[100px] flex-col items-center justify-center rounded-[22px] border border-[#c7daf6] bg-[#eef5ff] px-4 py-3 text-center">
+                  <p className="text-[11px] font-semibold text-[#56718f]">当前面试</p>
+                  <p className="mt-1 text-4xl font-semibold leading-none text-[#1f5fbf]">{boardStats.inProgress}</p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              {activeInterviewRows.length > 0 ? (
+                activeInterviewRows.slice(0, 4).map((interview) => (
+                  <div key={interview.id} className="flex items-center justify-between gap-3 rounded-2xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2 text-xs">
+                    <span className="min-w-0 truncate font-semibold text-[#16355f]">{interview.name || '未命名候选人'}</span>
+                    <span className="min-w-0 truncate text-[#56718f]">{interview.position || '未关联岗位'}</span>
                   </div>
                 ))
               ) : (
-                <div className="col-span-5 rounded-[18px] border border-dashed border-[#d6e2f1] px-4 py-6 text-center text-sm text-[#6b86a4]">
-                  暂无流程数据。
+                <div className="rounded-[18px] border border-dashed border-[#d6e2f1] px-4 py-5 text-center text-sm text-[#6b86a4]">
+                  当前没有正在进行的面试。
                 </div>
               )}
+              {activeInterviewRows.length > 4 ? (
+                <p className="text-xs text-[#6b86a4]">还有 {activeInterviewRows.length - 4} 场正在进行。</p>
+              ) : null}
             </div>
           </section>
         </div>
@@ -1946,11 +1975,7 @@ export default function Interviews() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-1.5 flex items-center gap-2 text-sm text-[#56718f]">
-                      <span className="font-medium text-[#24476b]">候选人：{interview.name}</span>
-                      <span className="text-[#9ab0c9]">|</span>
-                      面试官: {interview.interviewer || '未定专家'}
-                    </p>
+                    <p className="mt-1.5 text-sm font-medium text-[#24476b]">候选人：{interview.name}</p>
                     <p className="mt-2 inline-flex w-fit rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#1f5fbf]">
                       {interview.position || '未关联岗位'}
                     </p>
@@ -2017,7 +2042,7 @@ export default function Interviews() {
                 <div className="mt-4 flex items-center gap-6 border-t border-[#e4edf8] pt-4">
                   <div className="flex items-center gap-1.5 text-sm font-medium text-[#24476b]">
                     <Clock className="w-4 h-4 text-[#6b86a4]" />
-                    {interview.schedule_time?.replace('T', ' ').slice(0, 16) || '待定排期'}
+                    {formatScheduleDateTime(interview.schedule_time)}
                   </div>
                   <div className={`flex items-center gap-1.5 text-sm font-medium ${isRemote(interview.location_type) ? 'text-[#1f5fbf]' : 'text-[#6b86a4]'}`}>
                     <Video className="w-4 h-4" /> {interview.location_type || '线下评估'}

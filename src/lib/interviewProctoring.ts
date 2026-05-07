@@ -1,4 +1,5 @@
 export type ProctoringEventType =
+  | 'camera_check_passed'
   | 'camera_denied'
   | 'camera_closed'
   | 'no_face'
@@ -50,6 +51,14 @@ type ProctoringSummary = {
   summaryText: string;
 };
 
+export type ScreenSwitchSummary = {
+  eventCount: number;
+  totalDurationMs: number;
+  longestDurationMs: number;
+  pageHiddenCount: number;
+  windowBlurCount: number;
+};
+
 const PROCTORING_BUCKET = 'interview-proctoring';
 
 const TIMED_EVENT_THRESHOLDS_MS: Partial<Record<ProctoringEventType, number>> = {
@@ -61,10 +70,12 @@ const TIMED_EVENT_THRESHOLDS_MS: Partial<Record<ProctoringEventType, number>> = 
   head_down: 3000,
   head_up: 3000,
   face_occluded: 1500,
-  page_hidden: 10000,
+  page_hidden: 2000,
+  window_blur: 2000,
 };
 
 const EVENT_LABELS: Record<ProctoringEventType, string> = {
+  camera_check_passed: '摄像头监考摘要',
   camera_denied: '摄像头权限拒绝',
   camera_closed: '摄像头关闭',
   no_face: '未检测到人脸',
@@ -88,6 +99,10 @@ const RISK_SCORE_BY_SEVERITY: Record<ProctoringSeverity, number> = {
 export function shouldOpenTimedEvent(type: ProctoringEventType, durationMs: number): boolean {
   const thresholdMs = TIMED_EVENT_THRESHOLDS_MS[type];
   return thresholdMs !== undefined && durationMs >= thresholdMs;
+}
+
+export function isScreenSwitchEvent(type: ProctoringEventType): boolean {
+  return type === 'page_hidden' || type === 'window_blur';
 }
 
 export function resolveTimedEventSession(
@@ -122,6 +137,10 @@ export function deriveProctoringSeverity(
     return 'high';
   }
 
+  if (eventType === 'camera_check_passed') {
+    return 'low';
+  }
+
   if (
     eventType === 'no_face' ||
     eventType === 'off_screen_attention' ||
@@ -129,10 +148,15 @@ export function deriveProctoringSeverity(
     eventType === 'head_turned_right' ||
     eventType === 'head_down' ||
     eventType === 'head_up' ||
-    eventType === 'face_occluded' ||
-    eventType === 'page_hidden'
+    eventType === 'face_occluded'
   ) {
     return shouldOpenTimedEvent(eventType, durationMs) ? 'medium' : 'low';
+  }
+
+  if (isScreenSwitchEvent(eventType)) {
+    if (durationMs >= 30000) return 'high';
+    if (durationMs >= 10000) return 'medium';
+    return shouldOpenTimedEvent(eventType, durationMs) ? 'low' : 'low';
   }
 
   return 'low';
@@ -165,6 +189,19 @@ export function summarizeProctoringEvents(events: ProctoringEventRow[]): Proctor
     lowCount,
     riskScore: Math.min(uncappedRiskScore, 100),
     summaryText,
+  };
+}
+
+export function summarizeScreenSwitchEvents(events: ProctoringEventRow[]): ScreenSwitchSummary {
+  const screenSwitchEvents = events.filter((event) => isScreenSwitchEvent(event.event_type));
+  const durations = screenSwitchEvents.map((event) => Math.max(0, Number(event.duration_ms) || 0));
+
+  return {
+    eventCount: screenSwitchEvents.length,
+    totalDurationMs: durations.reduce((total, duration) => total + duration, 0),
+    longestDurationMs: durations.length > 0 ? Math.max(...durations) : 0,
+    pageHiddenCount: screenSwitchEvents.filter((event) => event.event_type === 'page_hidden').length,
+    windowBlurCount: screenSwitchEvents.filter((event) => event.event_type === 'window_blur').length,
   };
 }
 

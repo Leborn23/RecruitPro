@@ -8,6 +8,8 @@ from src.agent.graph import _is_experience_style_question, get_compiled_graph
 from src.agent.llm_service import default_llm
 from src.agent.api_schemas import AgentActionType
 from src.agent.runtime import InterviewAgentRuntime
+from src.agent.nodes import reviewer
+from src.agent.schemas import InterviewPlan
 
 
 def _force_mock_llm():
@@ -23,6 +25,51 @@ def _force_mock_llm():
 def test_graph_initialization():
     graph = get_compiled_graph()
     assert graph is not None
+
+
+def test_evaluate_answer_falls_back_when_structured_llm_fails(monkeypatch):
+    plan = InterviewPlan.model_validate(
+        {
+            "questions": [
+                {
+                    "topic": "architecture",
+                    "question_text": "How would you design the module?",
+                    "expected_key_points": ["interfaces", "tests"],
+                    "rendered_text": "How would you design the module?",
+                },
+                {
+                    "topic": "testing",
+                    "question_text": "How would you test it?",
+                    "expected_key_points": ["unit", "integration"],
+                    "rendered_text": "How would you test it?",
+                },
+                {
+                    "topic": "deployment",
+                    "question_text": "How would you deploy it?",
+                    "expected_key_points": ["rollback", "monitoring"],
+                    "rendered_text": "How would you deploy it?",
+                },
+            ],
+            "estimated_duration_minutes": 15,
+        }
+    )
+    monkeypatch.setattr(
+        reviewer.default_llm,
+        "invoke_structured",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid json")),
+    )
+
+    result = reviewer.evaluate_answer_node(
+        {
+            "interview_plan": plan,
+            "asked_questions": ["How would you design the module?"],
+            "answers": ["I would split interfaces, services, and tests."],
+        }
+    )
+
+    evaluation = result["last_evaluation"]
+    assert evaluation.dimensions.technical_depth == 4
+    assert "llm_evaluation_failed_needs_review" in evaluation.missing_logic_elements
 
 
 def test_experience_style_question_detects_chinese_keywords():
@@ -77,6 +124,38 @@ def test_runtime_detects_followup_still_waits_for_answer():
     )
 
     assert runtime._has_pending_answer_for_current_question("followup-session") is False
+
+
+def test_decide_next_step_allows_followup_on_each_question():
+    from src.agent.graph import decide_next_step
+    from src.agent.schemas import AnswerEvaluation, ScoreDimensions
+
+    state = {
+        "interview_plan": SimpleNamespace(questions=[object(), object(), object()]),
+        "asked_questions": [
+            "Q1 项目经历：请介绍一个你负责的项目",
+            "Q2 项目经历：请介绍另一个你负责的项目",
+        ],
+        "answers": [
+            "A1 first answer with enough useful detail to be eligible for a follow-up.",
+            "A1 follow-up answer.",
+            "A2 first answer with enough useful detail to be eligible for a follow-up.",
+        ],
+        "last_evaluation": AnswerEvaluation(
+            question="Q2 项目经历：请介绍另一个你负责的项目",
+            answer="A2 first answer with enough useful detail to be eligible for a follow-up.",
+            dimensions=ScoreDimensions(
+                technical_depth=5,
+                communication_logic=5,
+                problem_solving=5,
+            ),
+            feedback="Missing implementation details.",
+            missing_logic_elements=["implementation_details"],
+        ),
+        "followed_up_question_indexes": [0],
+    }
+
+    assert decide_next_step(state) == "ask_follow_up"
 
 
 def test_graph_execution_mock():

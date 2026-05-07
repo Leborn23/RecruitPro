@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type RefCallba
 import {
   buildSnapshotPath,
   deriveProctoringSeverity,
+  isScreenSwitchEvent,
   resolveTimedEventSession,
   shouldOpenTimedEvent,
   uploadProctoringSnapshot,
@@ -23,9 +24,10 @@ export type UseInterviewProctoringResult = {
   status: InterviewProctoringStatus;
   statusText: string;
   faceBox: ProctoringFaceBox | null;
+  screenSwitch: ProctoringScreenSwitchState;
   consented: boolean;
   setConsented: Dispatch<SetStateAction<boolean>>;
-  start: () => Promise<void>;
+  start: (options?: { assumeConsent?: boolean }) => Promise<void>;
   stop: () => Promise<void>;
   flushEvents: () => Promise<void>;
 };
@@ -37,6 +39,16 @@ export type ProctoringFaceBox = {
   height: number;
   state: 'normal' | 'warning';
   label: string;
+};
+
+export type ProctoringScreenSwitchState = {
+  active: boolean;
+  type: Extract<ProctoringEventType, 'page_hidden' | 'window_blur'> | null;
+  startedAt: string | null;
+  lastDurationMs: number;
+  eventCount: number;
+  totalDurationMs: number;
+  statusText: string;
 };
 
 type DetectedFace = {
@@ -84,10 +96,35 @@ type ActiveTimedEvent = {
 };
 
 const POLL_INTERVAL_MS = 300;
-const IMMEDIATE_EVENT_TYPES = new Set<ProctoringEventType>(['camera_closed', 'window_blur']);
+const IMMEDIATE_EVENT_TYPES = new Set<ProctoringEventType>(['camera_closed']);
 const HEAD_YAW_THRESHOLD = 28;
 const HEAD_PITCH_DOWN_THRESHOLD = -16;
 const HEAD_PITCH_UP_THRESHOLD = 18;
+const CONSENT_STORAGE_PREFIX = 'recruitpro:interview-proctoring-consent:';
+
+function getConsentStorageKey(interviewId: string): string {
+  return `${CONSENT_STORAGE_PREFIX}${interviewId}`;
+}
+
+function readStoredConsent(interviewId: string): boolean {
+  if (typeof window === 'undefined') return false;
+
+  try {
+    return window.localStorage.getItem(getConsentStorageKey(interviewId)) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredConsent(interviewId: string, value: boolean): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(getConsentStorageKey(interviewId), value ? 'true' : 'false');
+  } catch {
+    // Local storage can be disabled; in-memory consent still works for the current page.
+  }
+}
 
 function resolveErrorMessage(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'message' in error) {
@@ -116,6 +153,19 @@ function shouldCommitTimedEvent(type: ProctoringEventType, durationMs: number): 
 
 function isVisualEvent(type: ProctoringEventType): boolean {
   return type !== 'page_hidden' && type !== 'window_blur';
+}
+
+function getScreenSwitchStatusText(
+  type: ProctoringScreenSwitchState['type'],
+  durationMs: number
+): string {
+  if (type === 'page_hidden') {
+    return `检测到离开考试页面 ${Math.round(durationMs / 1000)} 秒`;
+  }
+  if (type === 'window_blur') {
+    return `检测到窗口失焦 ${Math.round(durationMs / 1000)} 秒`;
+  }
+  return '切屏监控正常';
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -365,10 +415,20 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const sessionIdRef = useRef(sessionId);
   const enabledRef = useRef(enabled);
   const consentedRef = useRef(false);
+  const sessionSummaryRecordedRef = useRef(false);
   const [status, setStatus] = useState<InterviewProctoringStatus>('idle');
   const [statusText, setStatusText] = useState('摄像头监考未开启');
   const [faceBox, setFaceBox] = useState<ProctoringFaceBox | null>(null);
-  const [consented, setConsented] = useState(false);
+  const [screenSwitch, setScreenSwitch] = useState<ProctoringScreenSwitchState>({
+    active: false,
+    type: null,
+    startedAt: null,
+    lastDurationMs: 0,
+    eventCount: 0,
+    totalDurationMs: 0,
+    statusText: '切屏监控正常',
+  });
+  const [consented, setConsented] = useState(() => readStoredConsent(interviewId));
 
   const attachStreamToVideo = useCallback((node: HTMLVideoElement | null): void => {
     videoElementRef.current = node;
@@ -387,6 +447,34 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     setStatus((current) => (current === nextStatus ? current : nextStatus));
     setStatusText((current) => (current === nextText ? current : nextText));
+  }
+
+  function markScreenSwitchOpen(type: ProctoringEventType, timestampMs: number): void {
+    if (!isScreenSwitchEvent(type)) return;
+
+    const switchType = type as ProctoringScreenSwitchState['type'];
+    setScreenSwitch((current) => ({
+      ...current,
+      active: true,
+      type: switchType,
+      startedAt: new Date(timestampMs).toISOString(),
+      lastDurationMs: 0,
+      statusText: getScreenSwitchStatusText(switchType, 0),
+    }));
+  }
+
+  function markScreenSwitchClose(type: ProctoringEventType, durationMs: number, committed: boolean): void {
+    if (!isScreenSwitchEvent(type)) return;
+
+    setScreenSwitch((current) => ({
+      active: false,
+      type: null,
+      startedAt: null,
+      lastDurationMs: durationMs,
+      eventCount: committed ? current.eventCount + 1 : current.eventCount,
+      totalDurationMs: committed ? current.totalDurationMs + durationMs : current.totalDurationMs,
+      statusText: committed ? `已记录切屏 ${Math.round(durationMs / 1000)} 秒` : '切屏监控正常',
+    }));
   }
 
   function clearPollTimer(): void {
@@ -426,6 +514,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       metadata,
       snapshotPaths: [],
     });
+    markScreenSwitchOpen(type, timestampMs);
   }
 
   async function captureSnapshot(type: ProctoringEventType, timestampMs: number): Promise<string[]> {
@@ -479,9 +568,16 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     activeEventsRef.current.delete(type);
 
     const durationMs = Math.max(0, timestampMs - active.startedMs);
-    if (!shouldCommitTimedEvent(type, durationMs)) return;
+    const shouldCommit = shouldCommitTimedEvent(type, durationMs);
+    if (!shouldCommit) {
+      markScreenSwitchClose(type, durationMs, false);
+      return;
+    }
     const eventSessionId = resolveTimedEventSession(active.sessionId, sessionIdRef.current);
-    if (!eventSessionId) return;
+    if (!eventSessionId) {
+      markScreenSwitchClose(type, durationMs, false);
+      return;
+    }
 
     const endedAt = new Date(timestampMs).toISOString();
     const eventMetadata: Record<string, unknown> = { ...active.metadata, ...metadata };
@@ -506,6 +602,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       snapshot_paths: snapshotPaths,
       metadata: Object.keys(eventMetadata).length > 0 ? eventMetadata : null,
     });
+    markScreenSwitchClose(type, durationMs, true);
   }
 
   async function closeActiveTimedEvents(
@@ -594,6 +691,16 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
       return;
     }
 
+    if (activeEventsRef.current.has('page_hidden')) {
+      setRuntimeStatus('warning', '检测到离开考试页面');
+      return;
+    }
+
+    if (activeEventsRef.current.has('window_blur')) {
+      setRuntimeStatus('warning', '检测到窗口失焦');
+      return;
+    }
+
     if (hasThresholdWarning(timestampMs)) {
       setRuntimeStatus('warning', '请保持面部在摄像头画面内');
       return;
@@ -612,6 +719,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
   async function flushEvents(): Promise<void> {
     await closeActiveTimedEvents(Date.now(), { flushed: true });
+    recordSessionSummaryEvent();
 
     if (flushingRef.current) {
       flushAgainRef.current = true;
@@ -674,6 +782,35 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     }
   }
 
+  function recordSessionSummaryEvent(): void {
+    const currentSessionId = sessionIdRef.current;
+    const track = getFirstVideoTrack(streamRef.current);
+    if (!currentSessionId || !track || sessionSummaryRecordedRef.current) return;
+
+    const timestamp = new Date().toISOString();
+    sessionSummaryRecordedRef.current = true;
+    pendingEventsRef.current.push({
+      interview_id: interviewIdRef.current,
+      session_id: currentSessionId,
+      event_type: 'camera_check_passed',
+      severity: 'low',
+      confidence: 1,
+      started_at: timestamp,
+      ended_at: timestamp,
+      duration_ms: 0,
+      snapshot_paths: [],
+      metadata: {
+        camera_ready: track.readyState === 'live',
+        video_width: videoElementRef.current?.videoWidth ?? null,
+        video_height: videoElementRef.current?.videoHeight ?? null,
+        face_box_state: faceBox?.state ?? null,
+        face_box_label: faceBox?.label ?? null,
+        screen_switch_event_count: screenSwitch.eventCount,
+        screen_switch_total_duration_ms: screenSwitch.totalDurationMs,
+      },
+    });
+  }
+
   function cleanupDetector(): void {
     const detector = detectorRef.current;
     detectorRef.current = null;
@@ -713,6 +850,14 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     cleanupDetector();
     setRuntimeStatus('idle', '摄像头监考未开启');
     setFaceBox(null);
+    setScreenSwitch((current) => ({
+      ...current,
+      active: false,
+      type: null,
+      startedAt: null,
+      lastDurationMs: 0,
+      statusText: '切屏监控正常',
+    }));
 
     if (shouldFlush) {
       await flushEvents();
@@ -836,7 +981,11 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
       const nowMs = Date.now();
       if (document.visibilityState === 'hidden') {
+        if (activeEventsRef.current.has('window_blur')) {
+          void closeTimedEvent('window_blur', nowMs, { hidden_overlap: true });
+        }
         openTimedEvent('page_hidden', nowMs, { visibility_state: document.visibilityState });
+        setRuntimeStatus('warning', '检测到离开考试页面');
         return;
       }
 
@@ -847,8 +996,10 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     const handleBlur = () => {
       if (stoppedRef.current) return;
+      if (document.visibilityState === 'hidden') return;
 
       openTimedEvent('window_blur', Date.now(), { focused: false });
+      setRuntimeStatus('warning', '检测到窗口失焦');
     };
 
     const handleFocus = () => {
@@ -956,7 +1107,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     };
   }
 
-  async function start(): Promise<void> {
+  async function start(options: { assumeConsent?: boolean } = {}): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setRuntimeStatus('blocked', '当前浏览器无法访问摄像头');
       return;
@@ -965,6 +1116,12 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     if (!enabledRef.current) {
       setRuntimeStatus('idle', '摄像头监考未启用');
       return;
+    }
+
+    if (options.assumeConsent) {
+      consentedRef.current = true;
+      writeStoredConsent(interviewIdRef.current, true);
+      setConsented(true);
     }
 
     if (!consentedRef.current) {
@@ -985,6 +1142,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
     stoppedRef.current = false;
+    sessionSummaryRecordedRef.current = false;
     setRuntimeStatus('requesting', '正在请求摄像头权限');
 
     try {
@@ -1067,10 +1225,47 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }, [interviewId, sessionId, enabled, consented]);
 
   useEffect(() => {
+    setConsented(readStoredConsent(interviewId));
+  }, [interviewId]);
+
+  useEffect(() => {
+    writeStoredConsent(interviewId, consented);
+  }, [interviewId, consented]);
+
+  useEffect(() => {
     if (!enabled) {
       void stopRuntime(true);
     }
   }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || !sessionId || !consented || !stoppedRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      if (!enabledRef.current || !sessionIdRef.current || !consentedRef.current || !stoppedRef.current) return;
+      void start();
+    }, 150);
+
+    return () => window.clearTimeout(timer);
+  }, [enabled, sessionId, consented]);
+
+  useEffect(() => {
+    if (!screenSwitch.active || !screenSwitch.startedAt || !screenSwitch.type) return;
+
+    const timer = window.setInterval(() => {
+      const durationMs = Math.max(0, Date.now() - new Date(screenSwitch.startedAt ?? '').getTime());
+      setScreenSwitch((current) => {
+        if (!current.active || !current.startedAt || !current.type) return current;
+        return {
+          ...current,
+          lastDurationMs: durationMs,
+          statusText: getScreenSwitchStatusText(current.type, durationMs),
+        };
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [screenSwitch.active, screenSwitch.startedAt, screenSwitch.type]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1086,6 +1281,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
     status,
     statusText,
     faceBox,
+    screenSwitch,
     consented,
     setConsented,
     start,

@@ -4,6 +4,7 @@ import {
   CalendarDays,
   ChevronDown,
   FileCheck2,
+  FileText,
   Hourglass,
   LayoutDashboard,
   LogOut,
@@ -78,6 +79,13 @@ export function AppLayout() {
   const avatarUrl = typeof metadata.avatar_url === 'string' && metadata.avatar_url.trim() ? metadata.avatar_url : '';
 
   const visibleNavLinks = NAV_LINKS.filter((link) => !link.permission || hasPermission(link.permission));
+  const orderedNavLinks = hasPermission('MANAGE_INTERVIEWS')
+    ? visibleNavLinks.flatMap((link) =>
+        link.path === '/settings'
+          ? [{ icon: FileText, label: '面试报告', path: '/interview-reports', permission: 'MANAGE_INTERVIEWS' }, link]
+          : [link]
+      )
+    : visibleNavLinks;
   const hasPendingAuth = !isSuperAdmin && visibleNavLinks.length === 0;
   const openProfile = () => {
     setIsUserMenuOpen(false);
@@ -140,7 +148,7 @@ export function AppLayout() {
         </div>
 
         <nav className="app-layout__nav">
-          {visibleNavLinks.map(({ icon: Icon, label, path }) => (
+          {orderedNavLinks.map(({ icon: Icon, label, path }) => (
             <NavLink
               key={path}
               to={path}
@@ -157,6 +165,21 @@ export function AppLayout() {
               )}
             </NavLink>
           ))}
+          {false && hasPermission('MANAGE_INTERVIEWS') ? (
+            <NavLink
+              to="/interview-reports"
+              className={({ isActive }) => `app-layout__nav-link ${isActive ? 'is-active' : ''}`}
+            >
+              {({ isActive }) => (
+                <>
+                  <div className={`app-layout__nav-icon ${isActive ? 'is-active' : ''}`}>
+                    <FileText className="h-5 w-5 transition-transform group-hover:scale-105" />
+                  </div>
+                  <span className="app-layout__nav-label">面试报告</span>
+                </>
+              )}
+            </NavLink>
+          ) : null}
         </nav>
 
         <div className="app-layout__user-shell">

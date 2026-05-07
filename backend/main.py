@@ -53,6 +53,7 @@ from models import (
 )
 
 PROCTORING_EVENT_TYPES = {
+    "camera_check_passed",
     "camera_denied",
     "camera_closed",
     "no_face",
@@ -68,6 +69,7 @@ PROCTORING_EVENT_TYPES = {
 }
 PROCTORING_SEVERITIES = {"low", "medium", "high"}
 PROCTORING_EVENT_LABELS = {
+    "camera_check_passed": "摄像头监考摘要",
     "camera_denied": "摄像头权限被拒绝",
     "camera_closed": "摄像头关闭",
     "no_face": "未检测到人脸",
@@ -78,9 +80,11 @@ PROCTORING_EVENT_LABELS = {
     "head_down": "长时间低头",
     "head_up": "长时间抬头",
     "face_occluded": "人脸关键点遮挡",
-    "page_hidden": "页面隐藏",
+    "page_hidden": "离开考试页面",
     "window_blur": "窗口失焦",
 }
+
+SCREEN_SWITCH_EVENT_TYPES = {"page_hidden", "window_blur"}
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
@@ -687,6 +691,89 @@ def clamp(value: float, lower: int = 0, upper: int = 100) -> int:
     return max(lower, min(upper, round(value)))
 
 
+def derive_final_interview_decision(ability_score: int | None, risk_score: int | None) -> tuple[str, str]:
+    ability = int(to_number(ability_score, 0))
+    risk = int(to_number(risk_score, 0))
+
+    if risk >= 90:
+        return "needs_review", f"能力分 {ability}，但监考风险 {risk} 分，风险极高，本场结果不宜直接采信，建议人工复核。"
+    if risk >= 70:
+        return "needs_review", f"能力分 {ability}，监考风险 {risk} 分较高，建议人工复核后再决定。"
+    if ability >= 75 and risk < 30:
+        return "hire", f"能力分 {ability}，监考风险 {risk} 分较低，整体表现达到通过标准。"
+    if ability >= 60 and risk < 50:
+        return "hold", f"能力分 {ability}，监考风险 {risk} 分可控，建议保留或复核。"
+    if ability < 60:
+        return "reject", f"能力分 {ability}，未达到基础通过线，建议不通过。"
+    return "needs_review", f"能力分 {ability}，监考风险 {risk} 分，需要结合岗位要求人工复核。"
+
+
+def build_ability_breakdown(dimension_scores: dict[str, int]) -> dict[str, Any]:
+    technical = int(to_number(dimension_scores.get("technical_depth"), 0))
+    communication = int(to_number(dimension_scores.get("communication"), 0))
+    problem_solving = int(to_number(dimension_scores.get("problem_solving"), 0))
+    solution_design = clamp(technical * 0.6 + problem_solving * 0.4)
+    engineering_execution = clamp(technical * 0.5 + problem_solving * 0.3 + communication * 0.2)
+    weighted_total = clamp(
+        technical * 0.30
+        + solution_design * 0.25
+        + engineering_execution * 0.20
+        + problem_solving * 0.15
+        + communication * 0.10
+    )
+
+    return {
+        "technical_understanding": technical,
+        "solution_design": solution_design,
+        "engineering_execution": engineering_execution,
+        "problem_analysis": problem_solving,
+        "communication": communication,
+        "weighted_total": weighted_total,
+        "weights": {
+            "technical_understanding": 30,
+            "solution_design": 25,
+            "engineering_execution": 20,
+            "problem_analysis": 15,
+            "communication": 10,
+        },
+    }
+
+
+def upsert_scoring_model_evidence(mapped: dict[str, Any], ability_breakdown: dict[str, Any], risk_breakdown: dict[str, Any] | None = None) -> None:
+    ability_score = int(to_number(mapped.get("overall_score"), 0))
+    risk_score = int(to_number(mapped.get("risk_score"), 0))
+    recommendation, decision_reason = derive_final_interview_decision(ability_score, risk_score)
+    mapped["recommendation"] = recommendation
+    mapped["decision_reason"] = decision_reason
+    mapped["summary"] = (
+        f"一句话结论：{decision_reason}\n"
+        f"能力分：{ability_score} 分。风险分：{risk_score} 分。最终建议：{recommendation}。\n"
+        "评分口径：能力分只根据回答内容计算；风险分只根据摄像头、切屏等监考事件计算；最终建议综合两者。"
+    )
+
+    evidence = mapped.get("evidence") if isinstance(mapped.get("evidence"), list) else []
+    evidence = [item for item in evidence if not (isinstance(item, dict) and item.get("type") == "scoring_model")]
+    evidence.insert(
+        0,
+        {
+            "type": "scoring_model",
+            "ability_score": ability_score,
+            "risk_score": risk_score,
+            "final_recommendation": recommendation,
+            "decision_reason": decision_reason,
+            "ability_breakdown": ability_breakdown,
+            "risk_breakdown": risk_breakdown or {
+                "event_count": 0,
+                "high_count": 0,
+                "medium_count": 0,
+                "low_count": 0,
+                "risk_score": risk_score,
+            },
+        },
+    )
+    mapped["evidence"] = evidence
+
+
 def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[str, Any]:
     evaluations = final_report.get("detailed_evaluations") if isinstance(final_report.get("detailed_evaluations"), list) else []
     strengths = [
@@ -706,26 +793,26 @@ def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[s
     technical = clamp(average([float((item.get("dimensions") or {}).get("technical_depth", 0)) for item in evaluations]) * 10)
     communication = clamp(average([float((item.get("dimensions") or {}).get("communication_logic", 0)) for item in evaluations]) * 10)
     problem_solving = clamp(average([float((item.get("dimensions") or {}).get("problem_solving", 0)) for item in evaluations]) * 10)
+    dimension_scores = {
+        "technical_depth": technical,
+        "communication": communication,
+        "problem_solving": problem_solving,
+    }
+    ability_breakdown = build_ability_breakdown(dimension_scores)
     overall_raw = final_report.get("overall_score")
-    overall_score = int(overall_raw) if isinstance(overall_raw, (int, float)) else None
-    recommendation = map_agent_recommendation(final_report.get("hire_recommendation"))
-    risk_score = clamp(100 - overall_score + len(risks) * 8) if overall_score is not None else None
-    summary_lines = [f"Recommendation: {recommendation}. Overall score: {overall_score if overall_score is not None else '-'}."]
+    overall_score = int(overall_raw) if isinstance(overall_raw, (int, float)) else int(ability_breakdown["weighted_total"])
+    summary_lines = [f"能力初评：{overall_score} 分。"]
     if strengths:
         summary_lines.append(f"Strengths: {'; '.join(strengths)}")
     if risks:
         summary_lines.append(f"Risks: {'; '.join(risks)}")
 
-    return {
+    mapped = {
         "overall_score": overall_score,
-        "dimension_scores": {
-            "technical_depth": technical,
-            "communication": communication,
-            "problem_solving": problem_solving,
-        },
+        "dimension_scores": dimension_scores,
         "strengths": strengths,
         "risks": risks,
-        "recommendation": recommendation,
+        "recommendation": map_agent_recommendation(final_report.get("hire_recommendation")),
         "evidence": [
             {
                 "question_index": index,
@@ -739,8 +826,10 @@ def map_agent_report_to_interview_report(final_report: dict[str, Any]) -> dict[s
             if isinstance(item, dict)
         ],
         "summary": "\n".join(summary_lines),
-        "risk_score": risk_score,
+        "risk_score": 0,
     }
+    upsert_scoring_model_evidence(mapped, ability_breakdown)
+    return mapped
 
 
 def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -748,6 +837,9 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, dict[str, Any]] = {}
     snapshot_paths: list[str] = []
     details: list[dict[str, Any]] = []
+    screen_switch_details: list[dict[str, Any]] = []
+    screen_switch_total_duration_ms = 0
+    screen_switch_longest_duration_ms = 0
 
     for event in events:
         if not isinstance(event, dict):
@@ -756,6 +848,7 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         if severity in severity_counts:
             severity_counts[severity] += 1
 
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         event_type = normalize_text(event.get("event_type"))
         label = PROCTORING_EVENT_LABELS.get(event_type, event_type or "未知监考事件")
         group = grouped.setdefault(
@@ -773,13 +866,15 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         if severity in severity_counts:
             group[f"{severity}_count"] += 1
 
-        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         head_pose = metadata.get("head_pose") if isinstance(metadata.get("head_pose"), dict) else {}
+        duration_ms = int(to_number(event.get("duration_ms"), 0))
+        category = "screen_switch" if event_type in SCREEN_SWITCH_EVENT_TYPES else "camera"
         detail = {
             "event_type": event_type or "unknown",
             "label": label,
+            "category": category,
             "severity": severity or "low",
-            "duration_ms": int(to_number(event.get("duration_ms"), 0)),
+            "duration_ms": duration_ms,
             "confidence": to_number(event.get("confidence"), None),
             "face_count": int(to_number(metadata.get("face_count"), 0)) if metadata.get("face_count") is not None else None,
             "face_score": to_number(metadata.get("face_score"), None),
@@ -795,6 +890,10 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             "ended_at": event.get("ended_at"),
         }
         details.append(detail)
+        if category == "screen_switch":
+            screen_switch_details.append(detail)
+            screen_switch_total_duration_ms += duration_ms
+            screen_switch_longest_duration_ms = max(screen_switch_longest_duration_ms, duration_ms)
 
         raw_paths = event.get("snapshot_paths") if isinstance(event.get("snapshot_paths"), list) else []
         for path in raw_paths:
@@ -806,8 +905,16 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     medium_count = severity_counts["medium"]
     low_count = severity_counts["low"]
     event_count = high_count + medium_count + low_count
-    risk_score = min(100, high_count * 25 + medium_count * 10 + low_count * 3)
+    risk_score = min(100, high_count * 35 + medium_count * 15 + low_count * 3)
     grouped_summary = sorted(grouped.values(), key=lambda item: (-int(item["count"]), str(item["label"])))
+    screen_switch_summary = {
+        "event_count": len(screen_switch_details),
+        "total_duration_ms": screen_switch_total_duration_ms,
+        "longest_duration_ms": screen_switch_longest_duration_ms,
+        "page_hidden_count": len([item for item in screen_switch_details if item.get("event_type") == "page_hidden"]),
+        "window_blur_count": len([item for item in screen_switch_details if item.get("event_type") == "window_blur"]),
+        "timeline": screen_switch_details[:20],
+    }
 
     return {
         "event_count": event_count,
@@ -818,6 +925,7 @@ def build_proctoring_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "grouped_summary": grouped_summary,
         "snapshot_paths": snapshot_paths,
         "details": details[:20],
+        "screen_switch_summary": screen_switch_summary,
     }
 
 
@@ -853,13 +961,14 @@ def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]
     mapped["risks"] = risks
 
     evidence = mapped.get("evidence") if isinstance(mapped.get("evidence"), list) else []
-    evidence_summary = "，".join(labels) if labels else message
+    evidence_summary = "；".join(labels) if labels else message
     evidence.append(
         {
             "type": "proctoring",
             "summary": evidence_summary,
             "grouped_summary": summary.get("grouped_summary", []),
             "details": summary.get("details", []),
+            "screen_switch_summary": summary.get("screen_switch_summary", {}),
             "event_count": event_count,
             "risk_score": risk_score,
             "snapshot_paths": summary.get("snapshot_paths", []),
@@ -869,8 +978,29 @@ def merge_proctoring_into_report(mapped: dict[str, Any], summary: dict[str, Any]
 
     existing_risk_score = mapped.get("risk_score")
     mapped["risk_score"] = max(int(to_number(existing_risk_score, 0)), risk_score)
-    if high_count > 0 or risk_score >= 40:
-        mapped["recommendation"] = "needs_review"
+    ability_breakdown = next(
+        (
+            item.get("ability_breakdown")
+            for item in mapped.get("evidence", [])
+            if isinstance(item, dict) and item.get("type") == "scoring_model" and isinstance(item.get("ability_breakdown"), dict)
+        ),
+        None,
+    )
+    if not isinstance(ability_breakdown, dict):
+        ability_breakdown = build_ability_breakdown(mapped.get("dimension_scores") if isinstance(mapped.get("dimension_scores"), dict) else {})
+    upsert_scoring_model_evidence(
+        mapped,
+        ability_breakdown,
+        {
+            "event_count": event_count,
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "risk_score": mapped["risk_score"],
+            "grouped_summary": summary.get("grouped_summary", []),
+            "screen_switch_summary": summary.get("screen_switch_summary", {}),
+        },
+    )
     return mapped
 
 

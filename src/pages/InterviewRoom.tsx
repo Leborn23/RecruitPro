@@ -140,8 +140,10 @@ function getProctoringEvidence(report: RoomReport): Array<{
   riskScore: number;
   snapshotPaths: string[];
   details: Array<{
+    eventType: string;
     label: string;
     severity: string;
+    category: string;
     startedAt: string;
     endedAt: string;
     durationMs: number;
@@ -181,8 +183,10 @@ function getProctoringEvidence(report: RoomReport): Array<{
                 ? (detail.head_pose as Record<string, unknown>)
                 : {};
             return {
+              eventType: String(detail.event_type ?? '').trim(),
               label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
               severity: String(detail.severity ?? '').trim(),
+              category: String(detail.category ?? '').trim(),
               startedAt: formatDateTime(String(detail.started_at ?? '')),
               endedAt: formatDateTime(String(detail.ended_at ?? '')),
               durationMs: Number.isFinite(durationMs) ? durationMs : 0,
@@ -238,7 +242,26 @@ function formatProctoringPoseValue(value: number | null): string {
 
 function formatDateTime(value: string | null): string {
   if (!value) return '未设置';
-  return value.replace('T', ' ').slice(0, 16);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value.replace('T', ' ').slice(0, 19);
+  }
+
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(
+    date.getMinutes()
+  )}:${pad(date.getSeconds())}`;
+}
+
+function formatDurationMs(value: number): string {
+  const totalSeconds = Math.max(0, Math.round(value / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+}
+
+function isScreenSwitchDetail(detail: { eventType: string; category: string }): boolean {
+  return detail.category === 'screen_switch' || detail.eventType === 'page_hidden' || detail.eventType === 'window_blur';
 }
 
 function isClosedStatus(status: string | null | undefined): boolean {
@@ -725,6 +748,11 @@ export default function InterviewRoom() {
       : proctoring.status === 'warning'
         ? 'border-amber-300 bg-amber-50 text-amber-800'
         : 'border-[#d6e2f1] bg-white text-[#4b6b90]';
+  const screenSwitchStatusClass = proctoring.screenSwitch.active
+    ? 'border-amber-300 bg-amber-50 text-amber-800'
+    : proctoring.screenSwitch.eventCount > 0
+      ? 'border-amber-200 bg-amber-50/70 text-amber-800'
+      : 'border-primary/20 bg-primary/10 text-primary';
   const canStart =
     !!interview?.candidate_id &&
     !isInterviewClosed &&
@@ -1019,6 +1047,10 @@ export default function InterviewRoom() {
                     <Camera className="w-4 h-4" />
                     {proctoringRequesting ? '正在打开摄像头...' : proctoringRunning ? '摄像头已就绪' : '打开摄像头'}
                   </button>
+                  <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${screenSwitchStatusClass}`}>
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    {proctoring.screenSwitch.statusText}
+                  </div>
                 </div>
 
                 <div className="relative overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
@@ -1185,45 +1217,80 @@ export default function InterviewRoom() {
               </div>
 
               {!isInterviewClosed ? (
-                <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
-                      <ProctoringStatusIcon className="w-3.5 h-3.5" />
-                      摄像头监考
-                    </p>
-                    <span className={`inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${proctoringStatusClass}`}>
-                      <span className="truncate">{proctoring.statusText}</span>
-                    </span>
-                  </div>
-                  <div className="relative w-full overflow-hidden rounded-lg border border-[#c7daf6] bg-[#0f172a] aspect-video">
-                    <video
-                      ref={proctoring.videoRef}
-                      muted
-                      playsInline
-                      className="h-full w-full object-fill"
-                    />
-                    {proctoring.faceBox ? (
-                      <div
-                        className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
-                        style={{
-                          left: `${proctoring.faceBox.x * 100}%`,
-                          top: `${proctoring.faceBox.y * 100}%`,
-                          width: `${proctoring.faceBox.width * 100}%`,
-                          height: `${proctoring.faceBox.height * 100}%`,
-                        }}
+                <>
+                  <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
+                        <ProctoringStatusIcon className="w-3.5 h-3.5" />
+                        摄像头监考
+                      </p>
+                      <span className={`inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${proctoringStatusClass}`}>
+                        <span className="truncate">{proctoring.statusText}</span>
+                      </span>
+                    </div>
+                    <div className="relative w-full overflow-hidden rounded-lg border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                      <video
+                        ref={proctoring.videoRef}
+                        muted
+                        playsInline
+                        className="h-full w-full object-fill"
                       />
-                    ) : proctoringRunning ? (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-[11px] font-semibold text-white">
-                        未检测到人脸框
-                      </div>
-                    ) : null}
-                    {proctoring.faceBox ? (
-                      <div className={`absolute bottom-1.5 left-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                        {proctoring.faceBox.label}
-                      </div>
+                      {proctoring.faceBox ? (
+                        <div
+                          className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
+                          style={{
+                            left: `${proctoring.faceBox.x * 100}%`,
+                            top: `${proctoring.faceBox.y * 100}%`,
+                            width: `${proctoring.faceBox.width * 100}%`,
+                            height: `${proctoring.faceBox.height * 100}%`,
+                          }}
+                        />
+                      ) : proctoringRunning ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-[11px] font-semibold text-white">
+                          未检测到人脸框
+                        </div>
+                      ) : null}
+                      {proctoring.faceBox ? (
+                        <div className={`absolute bottom-1.5 left-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                          {proctoring.faceBox.label}
+                        </div>
+                      ) : null}
+                    </div>
+                    {!proctoringRunning ? (
+                      <button
+                        type="button"
+                        onClick={() => void proctoring.start({ assumeConsent: true })}
+                        disabled={proctoringRequesting}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#c7daf6] bg-white px-3 py-2 text-xs font-semibold text-[#355b87] transition-colors hover:bg-[#eef5ff] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Camera className="h-3.5 w-3.5" />
+                        {proctoringRequesting ? '正在打开摄像头...' : '恢复摄像头监考'}
+                      </button>
                     ) : null}
                   </div>
-                </div>
+
+                  <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold text-[#16355f] flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        切屏监控
+                      </p>
+                      <span className={`inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${screenSwitchStatusClass}`}>
+                        <span className="truncate">{proctoring.screenSwitch.statusText}</span>
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-center">
+                      <div className="rounded-md bg-white border border-[#d6e2f1] px-2 py-1.5">
+                        <p className="text-[10px] text-[#6b86a4]">已记录</p>
+                        <p className="text-sm font-semibold text-[#16355f]">{proctoring.screenSwitch.eventCount}</p>
+                      </div>
+                      <div className="rounded-md bg-white border border-[#d6e2f1] px-2 py-1.5">
+                        <p className="text-[10px] text-[#6b86a4]">累计</p>
+                        <p className="text-sm font-semibold text-[#16355f]">{formatDurationMs(proctoring.screenSwitch.totalDurationMs)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
               ) : null}
 
               <button
@@ -1327,16 +1394,31 @@ export default function InterviewRoom() {
                       <div>事件数量：{evidence.eventCount}</div>
                     </div>
                     {evidence.summary ? <p className="mt-2 whitespace-pre-wrap">{evidence.summary}</p> : null}
-                    {evidence.details.length > 0 ? (
+                    {evidence.details.some(isScreenSwitchDetail) ? (
+                      <div className="mt-2 rounded border border-amber-200 bg-white/75 px-2 py-2">
+                        <div className="font-semibold text-amber-950">切屏记录</div>
+                        <div className="mt-1 space-y-1">
+                          {evidence.details.filter(isScreenSwitchDetail).map((detail, detailIndex) => (
+                            <div key={`screen-switch-detail-${detailIndex}`} className="flex flex-wrap gap-x-3 gap-y-1 text-amber-800">
+                              <span>{detail.startedAt} - {detail.endedAt}</span>
+                              <span>{detail.label}</span>
+                              <span>持续：{formatDurationMs(detail.durationMs)}</span>
+                              <span>级别：{toProctoringSeverityLabel(detail.severity)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {evidence.details.some((detail) => !isScreenSwitchDetail(detail)) ? (
                       <div className="mt-2 space-y-1.5">
-                        {evidence.details.map((detail, detailIndex) => (
+                        {evidence.details.filter((detail) => !isScreenSwitchDetail(detail)).map((detail, detailIndex) => (
                           <div key={`proctoring-detail-${detailIndex}`} className="rounded border border-amber-200 bg-white/65 px-2 py-1.5">
                             <div className="font-semibold">
                               {detail.startedAt} - {detail.endedAt} · {detail.label}
                             </div>
                             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-amber-800">
                               <span>级别：{toProctoringSeverityLabel(detail.severity)}</span>
-                              <span>持续：{Math.round(detail.durationMs / 100) / 10}s</span>
+                              <span>持续：{formatDurationMs(detail.durationMs)}</span>
                               {detail.faceCount !== null ? <span>人脸数：{detail.faceCount}</span> : null}
                               {detail.faceScore !== null ? <span>置信度：{Math.round(detail.faceScore * 100)}%</span> : null}
                               {detail.attentionSignal ? <span>{toProctoringAttentionLabel(detail.attentionSignal)}</span> : null}

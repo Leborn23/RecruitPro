@@ -8,6 +8,7 @@ import CandidateDetail from './pages/CandidateDetail';
 import Positions from './pages/Positions';
 import Screening from './pages/Screening';
 import Interviews from './pages/Interviews';
+import InterviewReports from './pages/InterviewReports';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import Login from './pages/Login';
@@ -78,6 +79,14 @@ function App() {
               element={
                 <ProtectedRoute permission="MANAGE_INTERVIEWS">
                   <Interviews />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="interview-reports"
+              element={
+                <ProtectedRoute permission="MANAGE_INTERVIEWS">
+                  <InterviewReports />
                 </ProtectedRoute>
               }
             />

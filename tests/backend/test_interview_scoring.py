@@ -18,6 +18,23 @@ if str(BACKEND_DIR) not in sys.path:
 from backend import main  # noqa: E402
 
 
+class ProctoringSchemaContractTest(unittest.TestCase):
+    def test_proctoring_event_type_constraints_cover_backend_event_types(self) -> None:
+        migration_paths = [
+            ROOT / "supabase" / "migrations" / "202605060001_interview_proctoring_events.sql",
+            ROOT / "supabase" / "migrations" / "202605070001_update_proctoring_event_type_check.sql",
+        ]
+
+        for path in migration_paths:
+            sql = path.read_text(encoding="utf-8")
+            missing_types = [
+                event_type
+                for event_type in sorted(main.PROCTORING_EVENT_TYPES)
+                if f"'{event_type}'" not in sql
+            ]
+            self.assertEqual(missing_types, [], f"{path.name} misses proctoring event types")
+
+
 class AgentFetchTest(unittest.TestCase):
     def test_agent_fetch_converts_connection_error_to_502(self) -> None:
         request = httpx.Request("POST", "http://127.0.0.1:8000/agent/start")
@@ -348,6 +365,9 @@ class InterviewProctoringEventsTest(unittest.TestCase):
                         "interview_id": "interview-1",
                         "event_type": "page_hidden",
                         "severity": "medium",
+                        "duration_ms": 12000,
+                        "started_at": "2026-05-06T10:00:03Z",
+                        "ended_at": "2026-05-06T10:00:15Z",
                         "snapshot_paths": ["/snapshots/c.jpg"],
                         "created_at": "2026-05-06T10:00:03Z",
                     },
@@ -388,8 +408,19 @@ class InterviewProctoringEventsTest(unittest.TestCase):
             response = main.score_interview(payload, "Bearer token")
 
         report = response["report"]
+        self.assertEqual(report["overall_score"], 80)
         self.assertEqual(report["recommendation"], "needs_review")
-        self.assertGreaterEqual(report["risk_score"], 45)
+        self.assertEqual(report["risk_score"], 85)
+        scoring_model = [
+            item
+            for item in report["evidence"]
+            if isinstance(item, dict) and item.get("type") == "scoring_model"
+        ][0]
+        self.assertEqual(scoring_model["ability_score"], 80)
+        self.assertEqual(scoring_model["risk_score"], 85)
+        self.assertEqual(scoring_model["final_recommendation"], "needs_review")
+        self.assertEqual(scoring_model["risk_breakdown"]["event_count"], 3)
+        self.assertIn("能力分只根据回答内容计算", report["summary"])
         proctoring_risks = [
             item
             for item in report["risks"]
@@ -405,6 +436,17 @@ class InterviewProctoringEventsTest(unittest.TestCase):
         ][0]
         self.assertIsInstance(proctoring_evidence.get("summary"), str)
         self.assertIn("多人", proctoring_evidence["summary"])
+        screen_switch_summary = proctoring_evidence.get("screen_switch_summary")
+        self.assertIsInstance(screen_switch_summary, dict)
+        self.assertEqual(screen_switch_summary.get("event_count"), 1)
+        self.assertEqual(screen_switch_summary.get("total_duration_ms"), 12000)
+        screen_switch_details = [
+            item
+            for item in proctoring_evidence.get("details", [])
+            if isinstance(item, dict) and item.get("category") == "screen_switch"
+        ]
+        self.assertEqual(len(screen_switch_details), 1)
+        self.assertEqual(screen_switch_details[0].get("event_type"), "page_hidden")
 
 
 class InterviewHumanConfirmTest(unittest.TestCase):
@@ -1043,7 +1085,7 @@ class InterviewHumanConfirmTest(unittest.TestCase):
         )
         report = result["report"]
         self.assertEqual(report["overall_score"], 76)
-        self.assertEqual(report["recommendation"], "hold")
+        self.assertEqual(report["recommendation"], "hire")
         self.assertEqual(report["dimension_scores"]["communication"], 80)
 
     def test_score_rejects_missing_final_report_instead_of_writing_pending_confirmation(self) -> None:

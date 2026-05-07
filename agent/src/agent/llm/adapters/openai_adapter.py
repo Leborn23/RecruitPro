@@ -90,29 +90,49 @@ class OpenAIAdapter(BaseLLMProvider):
             system_prompt
             + "\n\nCRITICAL: Return JSON object only, with no markdown fences and no extra text."
         )
-        content = self.invoke_plain(json_system_prompt, user_prompt, model_override=model)
+        last_exc: Exception | None = None
+        max_retries = _max_llm_retries()
+        for attempt in range(1, max_retries + 1):
+            content = self.invoke_plain(json_system_prompt, user_prompt, model_override=model) or ""
 
-        if "```json" in content:
-            content = content.split("```json")[-1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[-1].split("```")[0].strip()
+            if "```json" in content:
+                content = content.split("```json")[-1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[-1].split("```")[0].strip()
 
-        try:
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
 
-            # 自动修复：模型常把结果包在一层 schema 名字字段里。
-            if isinstance(data, dict) and len(data) == 1:
-                key = list(data.keys())[0]
-                key_l = key.lower()
-                expected = schema.__name__.lower()
-                if expected in key_l or key_l in expected:
-                    logger.info("Unwrapped nested JSON key from model response: %s", key)
-                    data = data[key]
+                # 自动修复：模型常把结果包在一层 schema 名字字段里。
+                if isinstance(data, dict) and len(data) == 1:
+                    key = list(data.keys())[0]
+                    key_l = key.lower()
+                    expected = schema.__name__.lower()
+                    if expected in key_l or key_l in expected:
+                        logger.info("Unwrapped nested JSON key from model response: %s", key)
+                        data = data[key]
 
-            return schema.model_validate(data)
-        except (json.JSONDecodeError, ValidationError, KeyError) as exc:
-            logger.warning("Structured validation failed for provider %s: %s", self._provider_name, exc)
-            raise
+                return schema.model_validate(data)
+            except (json.JSONDecodeError, ValidationError, KeyError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "Structured validation failed for provider %s on attempt %s/%s. content_prefix=%r error=%s",
+                    self._provider_name,
+                    attempt,
+                    max_retries,
+                    content[:160],
+                    exc,
+                )
+                if attempt >= max_retries:
+                    break
+                user_prompt = (
+                    user_prompt
+                    + "\n\nPrevious response was invalid JSON or failed schema validation. "
+                    + f"Return one valid JSON object matching {schema.__name__} only."
+                )
+                time.sleep(_retry_delay_seconds(attempt))
+
+        raise last_exc or RuntimeError("Structured validation failed")
 
     def invoke_plain(
         self,

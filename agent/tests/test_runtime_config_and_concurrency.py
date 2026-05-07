@@ -1,6 +1,7 @@
 import importlib
 import threading
 import time
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +9,7 @@ from pydantic import ValidationError
 
 from src.agent.llm_service import default_llm
 from src.agent.runtime import InterviewAgentRuntime
-from src.agent.schemas import InterviewPlan
+from src.agent.schemas import AnswerEvaluation, InterviewPlan
 
 
 def _build_questions(count: int) -> list[dict]:
@@ -229,4 +230,46 @@ def test_openai_adapter_retries_transient_plain_completion_failure(monkeypatch):
     adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
     assert adapter.invoke_plain("system", "user") == "ok"
+    assert completions.calls == 2
+
+
+def test_openai_adapter_retries_invalid_structured_json(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_RETRIES", "2")
+    monkeypatch.setenv("LLM_RETRY_BASE_SECONDS", "0.1")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    adapter_module = importlib.import_module("src.agent.llm.adapters.openai_adapter")
+
+    class _Completions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                content = ""
+            else:
+                content = json.dumps(
+                    {
+                        "question": "Q",
+                        "answer": "A",
+                        "dimensions": {
+                            "technical_depth": 6,
+                            "communication_logic": 7,
+                            "problem_solving": 6,
+                        },
+                        "feedback": "Valid evaluation",
+                        "missing_logic_elements": [],
+                    }
+                )
+            message = SimpleNamespace(content=content)
+            choice = SimpleNamespace(message=message)
+            return SimpleNamespace(choices=[choice])
+
+    completions = _Completions()
+    adapter = adapter_module.OpenAIAdapter("model", "key", "http://example.test")
+    adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = adapter.invoke_structured("system", "user", AnswerEvaluation)
+
+    assert result.dimensions.technical_depth == 6
     assert completions.calls == 2

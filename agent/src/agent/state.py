@@ -57,6 +57,7 @@ class InterviewState(TypedDict):
     asked_questions: Annotated[List[str], append_reducer]
     answers: Annotated[List[str], append_reducer]
     partial_scores: Annotated[List[AnswerEvaluation], append_reducer]
+    followed_up_question_indexes: Annotated[List[int], append_reducer]
     
     # 最新评估：路由器 decide_next_step 的主要依据。
     last_evaluation: Optional[AnswerEvaluation]

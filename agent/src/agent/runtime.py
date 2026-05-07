@@ -52,6 +52,7 @@ class InterviewAgentRuntime:
             "asked_questions": [],
             "answers": [],
             "partial_scores": [],
+            "followed_up_question_indexes": [],
             "final_report": None,
             "review_decision": None,
             "stop_reason": StopReason.NOT_STOPPED,

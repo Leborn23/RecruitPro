@@ -123,11 +123,27 @@ def evaluate_answer_node(state: InterviewState) -> Dict[str, Any]:
         candidate_answer=last_a_text,
     )
 
-    eval_result = default_llm.invoke_structured(
-        sys_p,
-        "Analyze the answer and return strict JSON evaluation.",
-        AnswerEvaluation,
-    )
+    try:
+        eval_result = default_llm.invoke_structured(
+            sys_p,
+            "Analyze the answer and return strict JSON evaluation.",
+            AnswerEvaluation,
+        )
+    except Exception:
+        logger.exception("Answer evaluation LLM call failed. Falling back to conservative local evaluation.")
+        eval_result = AnswerEvaluation.model_validate(
+            {
+                "question": last_q_text,
+                "answer": last_a_text,
+                "dimensions": {
+                    "technical_depth": 4,
+                    "communication_logic": 4,
+                    "problem_solving": 4,
+                },
+                "feedback": "自动评价服务本轮返回异常，系统已按保守分记录并继续面试，建议最终报告中人工复核本题。",
+                "missing_logic_elements": ["llm_evaluation_failed_needs_review"],
+            }
+        )
 
     return {
         "partial_scores": [eval_result],

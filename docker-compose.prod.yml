@@ -1,0 +1,47 @@
+name: recruitpro-prod
+
+services:
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    env_file:
+      - .env.production
+    environment:
+      AGENT_GATEWAY_HOST: 0.0.0.0
+      AGENT_GATEWAY_PORT: "8000"
+      AGENT_CHECKPOINT_BACKEND: sqlite
+      AGENT_CHECKPOINT_SQLITE_PATH: /app/artifacts/checkpoints/interview.sqlite
+      AGENT_WORKER_COUNT: "1"
+    volumes:
+      - ./agent/artifacts:/app/artifacts
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env.production
+    environment:
+      FASTAPI_PORT: "8010"
+      AGENT_BASE_URL: http://agent:8000
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.prod
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_FASTAPI_BASE_URL: ${VITE_FASTAPI_BASE_URL:-/api-fast}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
