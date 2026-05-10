@@ -96,6 +96,18 @@ const RISK_SCORE_BY_SEVERITY: Record<ProctoringSeverity, number> = {
   low: 3,
 };
 
+export function canRequestCameraInContext(input: {
+  isSecureContext?: boolean;
+  protocol?: string;
+  hostname?: string;
+}): boolean {
+  if (input.isSecureContext) return true;
+
+  const protocol = input.protocol ?? '';
+  const hostname = input.hostname ?? '';
+  return protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(hostname);
+}
+
 export function shouldOpenTimedEvent(type: ProctoringEventType, durationMs: number): boolean {
   const thresholdMs = TIMED_EVENT_THRESHOLDS_MS[type];
   return thresholdMs !== undefined && durationMs >= thresholdMs;

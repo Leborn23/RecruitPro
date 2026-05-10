@@ -172,7 +172,7 @@ const humanizeUploadError = (message: string | null, code: string | null): strin
 
   // 纯中文错误直接透传
   if (/[\u4e00-\u9fa5]/.test(raw)) return raw;
-  return codeLabel ?? '处理失败';
+  return codeLabel ? `${codeLabel}: ${raw}` : raw;
 };
 
 export default function Screening() {

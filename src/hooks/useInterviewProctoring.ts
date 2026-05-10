@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefCallback, type SetStateAction } from 'react';
 import {
   buildSnapshotPath,
+  canRequestCameraInContext,
   deriveProctoringSeverity,
   isScreenSwitchEvent,
   resolveTimedEventSession,
@@ -1108,6 +1109,18 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   }
 
   async function start(options: { assumeConsent?: boolean } = {}): Promise<void> {
+    if (
+      typeof window !== 'undefined' &&
+      !canRequestCameraInContext({
+        isSecureContext: window.isSecureContext,
+        protocol: window.location.protocol,
+        hostname: window.location.hostname,
+      })
+    ) {
+      setRuntimeStatus('blocked', '摄像头需要 HTTPS 站点或 localhost；请使用绑定域名的 HTTPS 地址直接打开系统。');
+      return;
+    }
+
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setRuntimeStatus('blocked', '当前浏览器无法访问摄像头');
       return;

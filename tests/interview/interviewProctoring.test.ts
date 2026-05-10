@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildSnapshotPath,
+  canRequestCameraInContext,
   deriveProctoringSeverity,
   resolveTimedEventSession,
   shouldOpenTimedEvent,
@@ -8,6 +9,11 @@ import {
   summarizeScreenSwitchEvents,
   type ProctoringEventRow,
 } from '../../src/lib/interviewProctoring.ts';
+
+assert.equal(canRequestCameraInContext({ isSecureContext: true, protocol: 'https:', hostname: 'example.com' }), true);
+assert.equal(canRequestCameraInContext({ isSecureContext: false, protocol: 'http:', hostname: 'localhost' }), true);
+assert.equal(canRequestCameraInContext({ isSecureContext: false, protocol: 'http:', hostname: '127.0.0.1' }), true);
+assert.equal(canRequestCameraInContext({ isSecureContext: false, protocol: 'http:', hostname: '203.0.113.10' }), false);
 
 assert.equal(deriveProctoringSeverity('camera_denied', 0), 'high');
 assert.equal(deriveProctoringSeverity('camera_closed', 0), 'high');
