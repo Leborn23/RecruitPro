@@ -1,13 +1,11 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { AlertCircle, AlertTriangle, ArrowLeft, Camera, CameraOff, CheckCircle2, Info, Play, Send, ShieldCheck, Timer } from 'lucide-react';
+import { useSearchParams, useParams } from 'react-router-dom';
+import { AlertCircle, AlertTriangle, Camera, CameraOff, CheckCircle2, Info, Play, Send, ShieldCheck, Timer } from 'lucide-react';
 import { useInterviewProctoring } from '../hooks/useInterviewProctoring';
-import { fetchInterviewReportByInterview, fetchInterviewTurns, interviewRuntimeEdge } from '../lib/interviewRuntime';
+import { interviewRuntimeEdge, type InterviewTurnRow } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
 import { deriveInterviewClockView, deriveInterviewQuestionMetrics, deriveInterviewStartState } from '../lib/interviewRoomState';
-import { normalizeReportText } from '../lib/reportText';
-import { supabase } from '../lib/supabase';
 
 type RoomInterviewRow = {
   id: string;
@@ -23,6 +21,8 @@ type RoomInterviewRow = {
   room_password_set_at: string | null;
   session_id: string | null;
   ai_report_id: string | null;
+  position_id?: string | null;
+  interview_question_count?: number | null;
 };
 
 type RoomMessage = {
@@ -30,33 +30,6 @@ type RoomMessage = {
   content: string;
   kind?: string;
   answerGuidance?: string;
-};
-
-type RoomReport = {
-  overall_score: number | null;
-  recommendation: string | null;
-  risk_score: number | null;
-  summary: string | null;
-  dimension_scores: Record<string, number>;
-  strengths: string[];
-  risks: string[];
-  evidence: unknown[];
-};
-
-const RECOMMENDATION_LABELS: Record<string, string> = {
-  hire: '建议通过',
-  hold: '建议保留',
-  needs_review: '建议复核',
-  reject: '建议淘汰'
-};
-
-const DIMENSION_LABELS: Record<string, string> = {
-  role_fit: '岗位匹配度',
-  technical_depth: '技术深度',
-  project_evidence: '项目证据',
-  problem_solving: '问题解决',
-  communication: '沟通表达',
-  ownership: '主导力'
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -77,33 +50,9 @@ function toErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function toRecommendationLabel(value?: string | null): string {
-  const key = String(value ?? '').trim().toLowerCase();
-  return RECOMMENDATION_LABELS[key] ?? '建议复核';
-}
-
-function toDimensionLabel(key: string): string {
-  return DIMENSION_LABELS[key] ?? key;
-}
-
 function toStatusLabel(value?: string | null): string {
   const key = String(value ?? '').trim().toLowerCase();
   return STATUS_LABELS[key] ?? (key || '待开始');
-}
-
-function normalizeDimensionScores(value: unknown): Record<string, number> {
-  if (!value || typeof value !== 'object') return {};
-  const output: Record<string, number> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) output[key] = Math.round(parsed);
-  }
-  return output;
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
 function isAgentSystemErrorMessage(content: string): boolean {
@@ -111,133 +60,48 @@ function isAgentSystemErrorMessage(content: string): boolean {
   return text.includes('session already exists') || text.includes('agent gateway request failed');
 }
 
-function toReport(raw: unknown): RoomReport | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const source = raw as Record<string, unknown>;
-
-  const overallRaw = source.overall_score;
-  const riskRaw = source.risk_score;
-  const overallScore = overallRaw == null ? null : Number.isFinite(Number(overallRaw)) ? Number(overallRaw) : null;
-  const riskScore = riskRaw == null ? null : Number.isFinite(Number(riskRaw)) ? Number(riskRaw) : null;
-  const recommendation = typeof source.recommendation === 'string' ? source.recommendation : null;
-  const summary = typeof source.summary === 'string' ? normalizeReportText(source.summary) : null;
-
-  return {
-    overall_score: overallScore,
-    recommendation,
-    risk_score: riskScore,
-    summary,
-    dimension_scores: normalizeDimensionScores(source.dimension_scores),
-    strengths: normalizeStringArray(source.strengths),
-    risks: normalizeStringArray(source.risks),
-    evidence: Array.isArray(source.evidence) ? source.evidence : []
-  };
+function getFastApiBaseUrl(): string {
+  return (import.meta.env.VITE_FASTAPI_BASE_URL as string | undefined)?.trim().replace(/\/$/, '') || '/api-fast';
 }
 
-function getProctoringEvidence(report: RoomReport): Array<{
-  summary: string;
-  eventCount: number;
-  riskScore: number;
-  snapshotPaths: string[];
-  details: Array<{
-    eventType: string;
-    label: string;
-    severity: string;
-    category: string;
-    startedAt: string;
-    endedAt: string;
-    durationMs: number;
-    faceCount: number | null;
-    faceScore: number | null;
-    attentionSignal: string;
-    poseSignal: string;
-    headPose: {
-      yaw: number | null;
-      pitch: number | null;
-      roll: number | null;
-    };
-    landmarkCount: number | null;
-  }>;
-}> {
-  return report.evidence
-    .filter((item): item is Record<string, unknown> => {
-      return Boolean(item && typeof item === 'object' && (item as Record<string, unknown>).type === 'proctoring');
-    })
-    .map((item) => {
-      const eventCount = Number(item.event_count);
-      const riskScore = Number(item.risk_score);
-      const rawDetails = Array.isArray(item.details) ? item.details : [];
-      return {
-        summary: typeof item.summary === 'string' ? item.summary : '',
-        eventCount: Number.isFinite(eventCount) ? Math.round(eventCount) : 0,
-        riskScore: Number.isFinite(riskScore) ? Math.round(riskScore) : 0,
-        snapshotPaths: normalizeStringArray(item.snapshot_paths),
-        details: rawDetails
-          .filter((detail): detail is Record<string, unknown> => Boolean(detail && typeof detail === 'object'))
-          .map((detail) => {
-            const durationMs = Number(detail.duration_ms ?? 0);
-            const faceCount = detail.face_count == null ? null : Number(detail.face_count);
-            const faceScore = detail.face_score == null ? null : Number(detail.face_score);
-            const rawHeadPose =
-              detail.head_pose && typeof detail.head_pose === 'object' && !Array.isArray(detail.head_pose)
-                ? (detail.head_pose as Record<string, unknown>)
-                : {};
-            return {
-              eventType: String(detail.event_type ?? '').trim(),
-              label: String(detail.label ?? detail.event_type ?? '未知监考事件').trim(),
-              severity: String(detail.severity ?? '').trim(),
-              category: String(detail.category ?? '').trim(),
-              startedAt: formatDateTime(String(detail.started_at ?? '')),
-              endedAt: formatDateTime(String(detail.ended_at ?? '')),
-              durationMs: Number.isFinite(durationMs) ? durationMs : 0,
-              faceCount: Number.isFinite(faceCount) ? faceCount : null,
-              faceScore: Number.isFinite(faceScore) ? faceScore : null,
-              attentionSignal: String(detail.attention_signal ?? '').trim(),
-              poseSignal: String(detail.pose_signal ?? '').trim(),
-              headPose: {
-                yaw: readProctoringNumber(rawHeadPose.yaw),
-                pitch: readProctoringNumber(rawHeadPose.pitch),
-                roll: readProctoringNumber(rawHeadPose.roll)
-              },
-              landmarkCount: readProctoringNumber(detail.landmark_count)
-            };
-          })
-      };
-    });
+async function fetchRoomJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${getFastApiBaseUrl()}${path}`);
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(text);
+    }
+  }
+  if (!response.ok) {
+    const detail = data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
+    throw new Error(detail || `请求考场数据失败 (${response.status})`);
+  }
+  return data as T;
 }
 
-function readProctoringNumber(value: unknown): number | null {
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? numberValue : null;
-}
-
-function toProctoringSeverityLabel(value: string): string {
-  if (value === 'high') return '高';
-  if (value === 'medium') return '中';
-  if (value === 'low') return '低';
-  return value || '-';
-}
-
-function toProctoringAttentionLabel(value: string): string {
-  if (value === 'face_near_edge') return '人脸贴近画面边缘';
-  if (value === 'face_too_small') return '人脸面积过小';
-  if (value === 'face_centered') return '人脸居中';
-  if (value === 'missing_face_bounds') return '缺少人脸框';
-  return value;
-}
-
-function toProctoringPoseLabel(value: string): string {
-  if (value === 'head_turned_left') return '头部向左偏转';
-  if (value === 'head_turned_right') return '头部向右偏转';
-  if (value === 'head_down') return '长时间低头';
-  if (value === 'head_up') return '长时间抬头';
-  if (value === 'face_occluded') return '人脸关键点遮挡';
-  if (value === 'head_forward') return '正对摄像头';
-  return value;
-}
-
-function formatProctoringPoseValue(value: number | null): string {
-  return value === null ? '-' : `${Math.round(value)}°`;
+async function postRoomJson<T>(path: string, body: object): Promise<T> {
+  const response = await fetch(`${getFastApiBaseUrl()}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(text);
+    }
+  }
+  if (!response.ok) {
+    const detail = data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
+    throw new Error(detail || `请求考场接口失败 (${response.status})`);
+  }
+  return data as T;
 }
 
 function formatDateTime(value: string | null): string {
@@ -258,10 +122,6 @@ function formatDurationMs(value: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;
-}
-
-function isScreenSwitchDetail(detail: { eventType: string; category: string }): boolean {
-  return detail.category === 'screen_switch' || detail.eventType === 'page_hidden' || detail.eventType === 'window_blur';
 }
 
 function isClosedStatus(status: string | null | undefined): boolean {
@@ -319,9 +179,10 @@ function dedupeRoomMessages(messages: RoomMessage[]): RoomMessage[] {
 }
 
 export default function InterviewRoom() {
-  const navigate = useNavigate();
   const { interviewId: interviewIdParam } = useParams();
+  const [searchParams] = useSearchParams();
   const interviewId = String(interviewIdParam ?? '').trim();
+  const passwordFromUrl = String(searchParams.get('password') ?? searchParams.get('pwd') ?? '').trim();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -330,7 +191,6 @@ export default function InterviewRoom() {
   const [messages, setMessages] = useState<RoomMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [busyAction, setBusyAction] = useState<'start' | 'turn' | 'finish' | null>(null);
-  const [report, setReport] = useState<RoomReport | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
   const [hasSubmitted, setHasSubmitted] = useState(false);
@@ -338,6 +198,7 @@ export default function InterviewRoom() {
   const [configuredQuestionCount, setConfiguredQuestionCount] = useState(DEFAULT_INTERVIEW_QUESTION_COUNT);
 
   const [accessGranted, setAccessGranted] = useState(false);
+  const [roomAccessToken, setRoomAccessToken] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -345,7 +206,8 @@ export default function InterviewRoom() {
   const proctoring = useInterviewProctoring({
     interviewId,
     sessionId: interview?.session_id ?? null,
-    enabled: accessGranted && !sessionFinalized
+    enabled: accessGranted && !sessionFinalized,
+    accessToken: roomAccessToken
   });
 
   const progressMetrics = useMemo(
@@ -372,20 +234,17 @@ export default function InterviewRoom() {
   );
 
   const readInterview = async (id: string): Promise<RoomInterviewRow> => {
-    const { data, error: queryError } = await supabase
-      .from('upcoming_interviews')
-      .select('id,candidate_id,name,stage,position,schedule_time,location_type,status,started_at,ended_at,room_password_set_at,session_id,ai_report_id')
-      .eq('id', id)
-      .single();
-
-    if (queryError || !data) {
-      throw new Error(queryError?.message ?? '找不到面试记录');
-    }
-    return data as RoomInterviewRow;
+    return fetchRoomJson<RoomInterviewRow>(`/api/interviews/room/${encodeURIComponent(id)}`);
   };
 
-  const syncTurns = async (sessionId: string): Promise<RoomMessage[]> => {
-    const turns = await fetchInterviewTurns(sessionId);
+  const syncTurns = async (sessionId: string, token = roomAccessToken): Promise<RoomMessage[]> => {
+    const data = await fetchRoomJson<{ items?: InterviewTurnRow[]; question_count?: number }>(
+      `/api/interviews/room/sessions/${encodeURIComponent(sessionId)}/turns?accessToken=${encodeURIComponent(token)}`
+    );
+    const turns = data.items ?? [];
+    if (typeof data.question_count === 'number') {
+      setTotalQuestionCount(data.question_count);
+    }
     const nextMessages = dedupeRoomMessages(
       turns
         .filter((turn) => {
@@ -410,52 +269,26 @@ export default function InterviewRoom() {
     return nextMessages;
   };
 
-  const syncTotalQuestionCount = async (sessionId: string): Promise<number | null> => {
-    const { data, error: sessionError } = await supabase
-      .from('interview_sessions')
-      .select('question_plan')
-      .eq('id', sessionId)
-      .single();
-
-    if (sessionError) {
-      setTotalQuestionCount(null);
-      return null;
-    }
-
-    const rawPlan = (data as { question_plan?: unknown } | null)?.question_plan;
-    if (!Array.isArray(rawPlan)) {
-      setTotalQuestionCount(null);
-      return null;
-    }
-
-    setTotalQuestionCount(rawPlan.length);
-    return rawPlan.length;
-  };
-
-  const syncReport = async (id: string): Promise<void> => {
-    const existing = await fetchInterviewReportByInterview(id);
-    if (!existing) return;
-    const parsed = toReport(existing);
-    if (parsed) setReport(parsed);
+  const syncTotalQuestionCount = async (sessionId: string, token = roomAccessToken): Promise<number | null> => {
+    const data = await fetchRoomJson<{ question_count?: number }>(
+      `/api/interviews/room/sessions/${encodeURIComponent(sessionId)}/turns?accessToken=${encodeURIComponent(token)}`
+    );
+    const count = typeof data.question_count === 'number' ? data.question_count : null;
+    setTotalQuestionCount(count);
+    return count;
   };
 
   const resolvePositionId = async (candidateId: string): Promise<string | null> => {
-    const { data, error: queryError } = await supabase
-      .from('candidates')
-      .select('p_id')
-      .eq('id', candidateId)
-      .single();
-
-    if (queryError) return null;
-    return (data?.p_id as string | null) ?? null;
+    if (candidateId !== interview?.candidate_id) return null;
+    return interview?.position_id ?? null;
   };
 
-  const resolveInterviewQuestionCount = async (): Promise<number> => {
-    const { data } = await supabase.from('company_settings').select('interview_question_count').single();
-    return normalizeInterviewQuestionCount((data as { interview_question_count?: unknown } | null)?.interview_question_count);
+  const resolveInterviewQuestionCount = (row: RoomInterviewRow | null | undefined): number => {
+    return normalizeInterviewQuestionCount(row?.interview_question_count);
   };
 
   const getRoomAccessKey = (id: string) => `interview-room-auth:${id}`;
+  const getRoomTokenKey = (id: string) => `interview-room-token:${id}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -477,27 +310,56 @@ export default function InterviewRoom() {
         if (cancelled) return;
         setInterview(interviewRow);
         setHasSubmitted(isClosedStatus(interviewRow.status));
-        const questionCount = await resolveInterviewQuestionCount();
+        if (passwordFromUrl) {
+          setPasswordInput(passwordFromUrl);
+        }
+        const questionCount = resolveInterviewQuestionCount(interviewRow);
         if (!cancelled) setConfiguredQuestionCount(questionCount);
 
         const passwordSetAt = String(interviewRow.room_password_set_at ?? '').trim();
+        let activeRoomToken = '';
         if (!passwordSetAt) {
-          setAccessGranted(true);
+          const tokenResult = await postRoomJson<{ accessToken?: unknown }>('/api/interviews/room-password', {
+            action: 'verify',
+            interviewId: interviewRow.id
+          });
+          activeRoomToken = String(tokenResult.accessToken ?? '').trim();
+          setRoomAccessToken(activeRoomToken);
+          setAccessGranted(Boolean(activeRoomToken));
         } else {
           const saved = sessionStorage.getItem(getRoomAccessKey(interviewRow.id));
-          setAccessGranted(saved === '1');
+          const savedToken = sessionStorage.getItem(getRoomTokenKey(interviewRow.id)) ?? '';
+          activeRoomToken = saved === '1' ? savedToken : '';
+          if (!activeRoomToken && passwordFromUrl) {
+            const verifyResult = await postRoomJson<{ verified?: unknown; accessToken?: unknown }>('/api/interviews/room-password', {
+              action: 'verify',
+              interviewId: interviewRow.id,
+              password: passwordFromUrl
+            });
+            if (Boolean(verifyResult.verified)) {
+              activeRoomToken = String(verifyResult.accessToken ?? '').trim();
+              if (activeRoomToken) {
+                sessionStorage.setItem(getRoomAccessKey(interviewRow.id), '1');
+                sessionStorage.setItem(getRoomTokenKey(interviewRow.id), activeRoomToken);
+                setNotice('密码已自动验证，已进入考场。');
+              }
+            } else {
+              setPasswordError('链接中的密码无效，请重新输入。');
+            }
+          }
+          setRoomAccessToken(activeRoomToken || savedToken);
+          setAccessGranted(Boolean(activeRoomToken));
         }
 
         const sessionId = String(interviewRow.session_id ?? '').trim();
-        if (sessionId) {
-          await syncTurns(sessionId);
-          await syncTotalQuestionCount(sessionId);
+        if (sessionId && activeRoomToken) {
+          await syncTurns(sessionId, activeRoomToken);
+          await syncTotalQuestionCount(sessionId, activeRoomToken);
         } else {
           setMessages([]);
           setTotalQuestionCount(null);
         }
 
-        await syncReport(interviewId);
       } catch (err) {
         if (cancelled) return;
         setError(toErrorMessage(err, '加载考场失败'));
@@ -510,7 +372,7 @@ export default function InterviewRoom() {
     return () => {
       cancelled = true;
     };
-  }, [interviewId]);
+  }, [interviewId, passwordFromUrl]);
 
   useEffect(() => {
     if (!interview?.started_at) return;
@@ -532,26 +394,44 @@ export default function InterviewRoom() {
   const handleVerifyPassword = async () => {
     if (!interview) return;
     if (!String(interview.room_password_set_at ?? '').trim()) {
+      const tokenResult = await postRoomJson<{ accessToken?: unknown }>('/api/interviews/room-password', {
+        action: 'verify',
+        interviewId: interview.id
+      });
+      const accessToken = String(tokenResult.accessToken ?? '').trim();
+      if (!accessToken) {
+        setPasswordError('考场访问凭证生成失败，请联系招聘方重新复制链接和密码。');
+        return;
+      }
+      sessionStorage.setItem(getRoomAccessKey(interview.id), '1');
+      sessionStorage.setItem(getRoomTokenKey(interview.id), accessToken);
+      setRoomAccessToken(accessToken);
       setAccessGranted(true);
       return;
     }
 
-    const { data, error: verifyError } = await supabase.functions.invoke('interview-room-password', {
-      body: {
+    let data: { verified?: unknown; accessToken?: unknown } | null = null;
+    try {
+      data = await postRoomJson('/api/interviews/room-password', {
         action: 'verify',
         interviewId: interview.id,
         password: passwordInput.trim()
-      }
-    });
-
-    if (verifyError) {
-      setPasswordError(toErrorMessage(verifyError, '密码校验失败，请稍后重试。'));
+      });
+    } catch (error) {
+      setPasswordError(toErrorMessage(error, '密码校验失败，请稍后重试。'));
       return;
     }
 
     const verified = Boolean((data as { verified?: unknown } | null)?.verified);
     if (verified) {
+      const accessToken = String((data as { accessToken?: unknown } | null)?.accessToken ?? '').trim();
+      if (!accessToken) {
+        setPasswordError('密码验证通过，但考场访问凭证生成失败，请联系招聘方重新复制链接和密码。');
+        return;
+      }
       sessionStorage.setItem(getRoomAccessKey(interview.id), '1');
+      sessionStorage.setItem(getRoomTokenKey(interview.id), accessToken);
+      setRoomAccessToken(accessToken);
       setAccessGranted(true);
       setPasswordError('');
       setNotice('密码验证通过，已进入考场。');
@@ -576,14 +456,15 @@ export default function InterviewRoom() {
       if (!positionId) {
         throw new Error('候选人未关联岗位，无法生成题目。');
       }
-      const questionCount = await resolveInterviewQuestionCount();
+      const questionCount = resolveInterviewQuestionCount(interview);
 
       const prepared = await interviewRuntimeEdge.prepareInterview<{ session_id?: string }>({
         interviewId: interview.id,
         candidateId: interview.candidate_id,
         positionId,
         mode: 'async_qa',
-        questionCount
+        questionCount,
+        accessToken: roomAccessToken
       });
 
       const sessionId = String(prepared?.session_id ?? interview.session_id ?? '').trim();
@@ -591,7 +472,8 @@ export default function InterviewRoom() {
 
       await interviewRuntimeEdge.startInterview({
         interviewId: interview.id,
-        sessionId
+        sessionId,
+        accessToken: roomAccessToken
       });
 
       const refreshed = await readInterview(interview.id);
@@ -633,7 +515,8 @@ export default function InterviewRoom() {
         speaker: 'candidate',
         content: answer,
         inputMode: 'text',
-        metadata: { source: 'candidate_room' }
+        metadata: { source: 'candidate_room' },
+        accessToken: roomAccessToken
       });
 
       const aiReplyKind = typeof turnResult?.ai_reply?.kind === 'string' ? turnResult.ai_reply.kind : '';
@@ -642,9 +525,9 @@ export default function InterviewRoom() {
       const nextMetrics = deriveInterviewQuestionMetrics(nextMessages, nextTotal, false);
 
       if (aiReplyKind === 'closing') {
-        setNotice('当前题目已完成，请点击右侧“提交”生成评分报告。');
+        setNotice('当前题目已完成，请点击右侧“提交”完成本场面试。');
       } else if (nextMetrics.totalCount > 0 && nextMetrics.completedCount >= nextMetrics.totalCount) {
-        setNotice('已完成全部题目，请点击右侧“提交”生成评分报告。');
+        setNotice('已完成全部题目，请点击右侧“提交”完成本场面试。');
       }
     } catch (err) {
       setDraft(answer);
@@ -682,27 +565,22 @@ export default function InterviewRoom() {
 
       await interviewRuntimeEdge.finishInterview({
         interviewId: interview.id,
-        sessionId
+        sessionId,
+        accessToken: roomAccessToken
       });
 
-      const scored = await interviewRuntimeEdge.scoreInterview<{ report?: unknown }>({
+      await interviewRuntimeEdge.scoreInterview({
         interviewId: interview.id,
-        sessionId
+        sessionId,
+        accessToken: roomAccessToken
       });
-
-      const nextReport = toReport(scored?.report);
-      if (nextReport) {
-        setReport(nextReport);
-      } else {
-        await syncReport(interview.id);
-      }
 
       const refreshed = await readInterview(interview.id);
       setInterview(refreshed);
       setHasSubmitted(true);
-      setNotice('已提交，评分报告已自动生成。');
+      setNotice('已提交，感谢完成本场 AI 面试。招聘方会在公司端查看面试结果。');
     } catch (err) {
-      setError(toErrorMessage(err, '提交后自动评分失败'));
+      setError(toErrorMessage(err, '提交面试失败'));
     } finally {
       setBusyAction(null);
     }
@@ -803,8 +681,6 @@ export default function InterviewRoom() {
         : hasOpenPrompt
           ? '作答中'
           : '等待题目';
-  const proctoringEvidence = report ? getProctoringEvidence(report) : [];
-
   if (loading) {
     return (
       <div className="min-h-screen bg-surface-container-low flex items-center justify-center p-6">
@@ -818,12 +694,6 @@ export default function InterviewRoom() {
       <div className="min-h-screen bg-surface-container-low flex items-center justify-center p-6">
         <div className="max-w-md w-full rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error space-y-3">
           <p>{error || '考场不存在或无权限访问。'}</p>
-          <button
-            onClick={() => navigate('/interviews')}
-            className="inline-flex items-center gap-2 rounded bg-surface-container-high px-3 py-1.5 text-on-surface hover:bg-surface-container-high/80 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" /> 返回面试中控
-          </button>
         </div>
       </div>
     );
@@ -855,12 +725,6 @@ export default function InterviewRoom() {
               className="flex-1 rounded-md bg-primary text-white px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
             >
               验证并进入
-            </button>
-            <button
-              onClick={() => navigate('/interviews')}
-              className="rounded-md bg-surface-container-high text-on-surface px-3 py-2 text-sm hover:bg-surface-container-high/80 transition-colors"
-            >
-              返回
             </button>
           </div>
         </div>
@@ -927,14 +791,6 @@ export default function InterviewRoom() {
                   <p className="text-lg font-semibold text-[#16355f]">{completionRate}%</p>
                 </div>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={() => navigate('/interviews')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#c7daf6] bg-white px-3 py-2 text-sm font-medium text-[#355b87] hover:bg-[#eef5ff] transition-colors"
-                >
-                  <ArrowLeft className="w-4 h-4" /> 返回中控
-                </button>
-              </div>
             </div>
           </div>
         </div>
@@ -968,7 +824,7 @@ export default function InterviewRoom() {
                 </span>
                 <div className="space-y-1">
                   <h3 className="text-base font-semibold text-on-surface">确认提交本场面试？</h3>
-                  <p className="text-sm text-on-surface-variant">提交后将自动评分，且无法继续作答。</p>
+                  <p className="text-sm text-on-surface-variant">提交后将结束本场面试，且无法继续作答。</p>
                 </div>
               </div>
 
@@ -1093,12 +949,6 @@ export default function InterviewRoom() {
                 <Play className="w-4 h-4" />
                 {busyAction === 'start' ? '启动中...' : '开始面试'}
               </button>
-              <button
-                onClick={() => navigate('/interviews')}
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-surface-container-high text-on-surface px-4 py-2.5 text-sm hover:bg-surface-container-high/80 transition-colors"
-              >
-                稍后再开始
-              </button>
             </div>
           </div>
         ) : (
@@ -1205,7 +1055,7 @@ export default function InterviewRoom() {
             <div className="rounded-[28px] border border-[#cddcf0] bg-white p-4 space-y-4 h-fit shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)] xl:sticky xl:top-6">
               <div className="space-y-1">
                 <h2 className="text-sm font-semibold text-[#16355f]">操作</h2>
-                <p className="text-xs text-[#6b86a4]">超时后不会自动提交，需手动确认提交并生成评分报告。</p>
+                <p className="text-xs text-[#6b86a4]">超时后不会自动提交，需手动确认提交本场面试。</p>
               </div>
 
               <div className={`rounded-[20px] border px-4 py-3 ${isOvertime ? 'border-[#efc1c8] bg-[#fff4f6]' : 'border-[#d6e2f1] bg-[#f7fbff]'}`}>
@@ -1347,101 +1197,6 @@ export default function InterviewRoom() {
                 </div>
               </div>
             </div>
-          </div>
-        )}
-
-        {report && (
-          <div className="rounded-[28px] border border-[#cddcf0] bg-white p-4 space-y-3 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
-            <div className="flex items-center gap-4 flex-wrap">
-              <div>
-                <p className="text-xs text-on-surface-variant">总分</p>
-                <p className="text-2xl font-bold text-on-surface">{report.overall_score ?? '-'}</p>
-              </div>
-              <div className="text-xs px-2.5 py-1 rounded border border-primary/20 bg-primary/10 text-primary font-semibold">
-                {toRecommendationLabel(report.recommendation)}
-              </div>
-              <div className="text-xs text-on-surface-variant">风险评分：{report.risk_score ?? '-'}</div>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-semibold text-on-surface mb-2">维度评分</h3>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {Object.entries(report.dimension_scores).map(([dimension, score]) => (
-                  <div key={dimension} className="rounded border border-outline-variant/20 px-3 py-2 text-xs flex justify-between bg-surface-container-low">
-                    <span className="text-on-surface-variant">{toDimensionLabel(dimension)}</span>
-                    <span className="font-semibold text-on-surface">{score}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {report.summary && (
-              <div className="rounded border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-xs text-on-surface whitespace-pre-wrap">
-                {report.summary}
-              </div>
-            )}
-
-            {proctoringEvidence.length > 0 && (
-              <div className="space-y-2">
-                {proctoringEvidence.map((evidence, index) => (
-                  <div key={index} className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    <div className="flex items-center gap-2 font-semibold">
-                      <AlertTriangle className="h-4 w-4 shrink-0" />
-                      <span>摄像头风控复核</span>
-                    </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <div>风险评分：{evidence.riskScore}</div>
-                      <div>事件数量：{evidence.eventCount}</div>
-                    </div>
-                    {evidence.summary ? <p className="mt-2 whitespace-pre-wrap">{evidence.summary}</p> : null}
-                    {evidence.details.some(isScreenSwitchDetail) ? (
-                      <div className="mt-2 rounded border border-amber-200 bg-white/75 px-2 py-2">
-                        <div className="font-semibold text-amber-950">切屏记录</div>
-                        <div className="mt-1 space-y-1">
-                          {evidence.details.filter(isScreenSwitchDetail).map((detail, detailIndex) => (
-                            <div key={`screen-switch-detail-${detailIndex}`} className="flex flex-wrap gap-x-3 gap-y-1 text-amber-800">
-                              <span>{detail.startedAt} - {detail.endedAt}</span>
-                              <span>{detail.label}</span>
-                              <span>持续：{formatDurationMs(detail.durationMs)}</span>
-                              <span>级别：{toProctoringSeverityLabel(detail.severity)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {evidence.details.some((detail) => !isScreenSwitchDetail(detail)) ? (
-                      <div className="mt-2 space-y-1.5">
-                        {evidence.details.filter((detail) => !isScreenSwitchDetail(detail)).map((detail, detailIndex) => (
-                          <div key={`proctoring-detail-${detailIndex}`} className="rounded border border-amber-200 bg-white/65 px-2 py-1.5">
-                            <div className="font-semibold">
-                              {detail.startedAt} - {detail.endedAt} · {detail.label}
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-amber-800">
-                              <span>级别：{toProctoringSeverityLabel(detail.severity)}</span>
-                              <span>持续：{formatDurationMs(detail.durationMs)}</span>
-                              {detail.faceCount !== null ? <span>人脸数：{detail.faceCount}</span> : null}
-                              {detail.faceScore !== null ? <span>置信度：{Math.round(detail.faceScore * 100)}%</span> : null}
-                              {detail.attentionSignal ? <span>{toProctoringAttentionLabel(detail.attentionSignal)}</span> : null}
-                              {detail.poseSignal ? <span>头部信号：{toProctoringPoseLabel(detail.poseSignal)}</span> : null}
-                              {detail.landmarkCount !== null ? <span>关键点：{detail.landmarkCount}</span> : null}
-                              {detail.headPose.yaw !== null || detail.headPose.pitch !== null || detail.headPose.roll !== null ? (
-                                <span>
-                                  姿态：yaw {formatProctoringPoseValue(detail.headPose.yaw)} / pitch{' '}
-                                  {formatProctoringPoseValue(detail.headPose.pitch)} / roll {formatProctoringPoseValue(detail.headPose.roll)}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {evidence.snapshotPaths.length > 0 ? (
-                      <p className="mt-2 text-amber-800">已保存异常关键帧 {evidence.snapshotPaths.length} 张，需在受控存储中复核。</p>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
       </div>

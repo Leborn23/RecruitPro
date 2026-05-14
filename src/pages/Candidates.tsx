@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, Filter, Loader2, Search, Send, Trash2, UserRound, Users, X } from 'lucide-react';
+import { ChevronDown, Filter, Loader2, Search, Trash2, UserRound, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import InterviewInviteModal from '../components/interviews/InterviewInviteModal';
 import { useAuth } from '../context/AuthContext';
@@ -23,12 +23,6 @@ type AdvancedFilters = {
   minExpYears: string;
   education: string;
   cityKeyword: string;
-};
-
-type ChatMessage = {
-  id: number;
-  text: string;
-  recalled: boolean;
 };
 
 const PAGE_SIZE = 20;
@@ -79,10 +73,7 @@ export default function Candidates() {
   const [deletingCandidateId, setDeletingCandidateId] = useState<string | null>(null);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
-  const [chatCandidate, setChatCandidate] = useState<CandidateListRow | null>(null);
   const [inviteCandidate, setInviteCandidate] = useState<CandidateListRow | null>(null);
-  const [chatMsg, setChatMsg] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [filters, setFilters] = useState<AdvancedFilters>(DEFAULT_FILTERS);
 
@@ -213,7 +204,6 @@ export default function Candidates() {
     const deletedSet = new Set(candidateIds);
     setSelectedCandidateIds((prev) => prev.filter((id) => !deletedSet.has(id)));
 
-    if (chatCandidate?.id && deletedSet.has(chatCandidate.id)) setChatCandidate(null);
     if (inviteCandidate?.id && deletedSet.has(inviteCandidate.id)) setInviteCandidate(null);
 
     refreshCandidates();
@@ -239,22 +229,6 @@ export default function Candidates() {
     if (!confirmed) return;
 
     await deleteCandidatesByIds(selectedCandidateIds);
-  };
-
-  const openChat = (candidate: CandidateListRow) => {
-    setChatCandidate(candidate);
-    setMessages([]);
-  };
-
-  const handleSend = () => {
-    if (!chatMsg.trim()) return;
-
-    setMessages((prev) => [...prev, { id: Date.now(), text: chatMsg.trim(), recalled: false }]);
-    setChatMsg('');
-  };
-
-  const handleRecall = (id: number) => {
-    setMessages((prev) => prev.map((message) => (message.id === id ? { ...message, recalled: true } : message)));
   };
 
   return (
@@ -516,16 +490,6 @@ export default function Candidates() {
                         >
                           邀约面试
                         </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openChat(candidate);
-                          }}
-                          className="rounded-xl border border-[#d7e5f7] bg-[#f7fbff] px-4 py-2.5 text-sm font-medium text-[#24476b] transition hover:bg-[#edf4fd]"
-                        >
-                          发消息
-                        </button>
                         {canDeleteCandidate ? (
                           <button
                             type="button"
@@ -575,88 +539,6 @@ export default function Candidates() {
             </div>
           </div>
         </section>
-
-        {chatCandidate ? (
-          <div className="fixed inset-y-0 right-0 z-50 flex w-[360px] max-w-full flex-col border-l border-[#d9e5f2] bg-white shadow-[0_24px_60px_-28px_rgba(15,23,42,0.3)] animate-in slide-in-from-right duration-300 md:w-[420px]">
-            <div className="border-b border-[#e8eff7] bg-[#fbfdff] px-5 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-[#d6e2f1] bg-white text-sm font-bold text-[#1f5fbf]">
-                    {(chatCandidate.name || '?').charAt(0)}
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-[#16355f]">{chatCandidate.name || '未命名候选人'}</h3>
-                    <p className="mt-0.5 text-xs text-[#5d7896]">{chatCandidate.title || '待沟通职位'}</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setChatCandidate(null)}
-                  className="rounded-xl border border-[#d7e5f7] bg-white p-2 text-[#4a688d] transition hover:border-[#aac6ea] hover:text-[#16355f]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-1 flex-col overflow-y-auto bg-[#fbfdff] p-4">
-              <div className="mb-5 flex justify-center">
-                <span className="rounded-full border border-[#d7e5f7] bg-white px-3 py-1 text-[11px] font-medium text-[#6b86a4]">
-                  今天 14:20
-                </span>
-              </div>
-
-              <div className="w-fit max-w-[88%] rounded-[18px] rounded-tl-sm border border-[#d6e2f1] bg-white p-3 text-sm leading-6 text-[#24476b] shadow-[0_14px_28px_-24px_rgba(15,23,42,0.18)]">
-                你好，我是 {chatCandidate.name || '候选人'}，对「{chatCandidate.title || '该职位'}」很感兴趣，期待进一步沟通。
-              </div>
-
-              <div className="mt-4 space-y-3">
-                {messages.map((message) =>
-                  message.recalled ? (
-                    <div key={message.id} className="flex justify-center">
-                      <span className="rounded-full border border-[#d7e5f7] bg-white px-3 py-1 text-[11px] text-[#6b86a4]">
-                        你撤回了一条消息
-                      </span>
-                    </div>
-                  ) : (
-                    <div key={message.id} className="group flex items-center justify-end gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <button
-                        type="button"
-                        onClick={() => handleRecall(message.id)}
-                        className="px-2 text-[11px] text-[#355b87] opacity-0 transition group-hover:opacity-100 hover:text-[#a2506a]"
-                      >
-                        撤回
-                      </button>
-                      <div className="max-w-[88%] rounded-[18px] rounded-tr-sm bg-[#1f5fbf] px-3 py-2.5 text-sm text-white shadow-[0_16px_24px_-20px_rgba(31,95,191,0.35)]">
-                        {message.text}
-                      </div>
-                    </div>
-                  )
-                )}
-              </div>
-            </div>
-
-            <div className="border-t border-[#e8eff7] bg-white p-4">
-              <div className="flex gap-2">
-                <input
-                  value={chatMsg}
-                  onChange={(event) => setChatMsg(event.target.value)}
-                  onKeyDown={(event) => event.key === 'Enter' && handleSend()}
-                  placeholder="输入消息..."
-                  className="flex-1 rounded-2xl border border-[#d7e5f7] bg-[#fbfdff] px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
-                />
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  disabled={!chatMsg.trim()}
-                  className="flex items-center justify-center rounded-2xl bg-[#1f5fbf] px-4 py-3 text-white transition hover:bg-[#194f9e] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
         <InterviewInviteModal
           open={Boolean(inviteCandidate)}

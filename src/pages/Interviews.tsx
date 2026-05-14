@@ -1,11 +1,11 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { fetchInterviewReportByInterview, interviewRuntimeEdge, type InterviewReportRow } from '../lib/interviewRuntime';
+import { type InterviewReportRow } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
 import { removeInterviewFromLocalState } from '../lib/interviewListState';
 import { normalizeReportText } from '../lib/reportText';
-import { AlertTriangle, Calendar, ChevronRight, Clock, FileText, ShieldCheck, Video, Bell, X, Plus, Pencil, Trash2, HelpCircle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, Calendar, Clock, FileText, ShieldCheck, Video, Bell, X, Plus, Pencil, Trash2, Maximize2, Minimize2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 type InterviewRow = {
@@ -20,6 +20,7 @@ type InterviewRow = {
   status: string | null;
   join_url: string | null;
   room_password_set_at: string | null;
+  started_at: string | null;
   session_id: string | null;
   ai_report_id: string | null;
 };
@@ -109,8 +110,6 @@ type ProctoringTimelineItem = {
 
 type SortBy = 'schedule_desc' | 'schedule_asc' | 'score_desc' | 'score_asc' | 'risk_desc' | 'updated_desc';
 
-const PROCTORING_BUCKET = 'interview-proctoring';
-
 const RECOMMENDATION_LABELS: Record<string, string> = {
   hire: '建议通过',
   hold: '建议保留',
@@ -136,8 +135,6 @@ const STATUS_LABELS: Record<string, string> = {
   no_show: '候选人缺席',
   failed: '异常中断'
 };
-
-const EARLY_ENTER_MINUTES = 5;
 
 const INSIGHT_TEXTS: Record<string, string> = {
   'Relevant role exposure in previous projects.': '过往项目经历与目标岗位有较强相关性。',
@@ -185,16 +182,20 @@ const defaultForm = (): InterviewForm => ({
   position: '',
   schedule_time: defaultDatetimeLocal(),
   interviewer: '',
-  location_type: '腾讯会议 (云端评估)'
+  location_type: 'AI 面试（线上考场）'
 });
 
 const buildInterviewRoomPath = (interviewId: string) => `/interview-room/${interviewId}`;
 
-function resolveInterviewRoomLink(interview: Pick<InterviewRow, 'id' | 'join_url'>): string {
-  const preset = String(interview.join_url ?? '').trim();
-  if (preset) return preset;
-  if (typeof window === 'undefined') return buildInterviewRoomPath(interview.id);
-  return `${window.location.origin}${buildInterviewRoomPath(interview.id)}`;
+const buildInterviewRoomPathWithPassword = (interviewId: string, password: string) => {
+  const params = new URLSearchParams();
+  if (password.trim()) params.set('password', password.trim());
+  const query = params.toString();
+  return `/interview-room/${interviewId}${query ? `?${query}` : ''}`;
+};
+
+function getFastApiBaseUrl(): string {
+  return (import.meta.env.VITE_FASTAPI_BASE_URL as string | undefined)?.trim().replace(/\/$/, '') || '/api-fast';
 }
 
 function toErrorMessage(error: unknown, fallback: string): string {
@@ -217,6 +218,35 @@ function toDimensionLabel(key: string): string {
 function toStatusLabel(value?: string | null): string {
   const key = String(value ?? '').trim().toLowerCase();
   return STATUS_LABELS[key] ?? (key || '待开始');
+}
+
+function formatLocationType(value?: string | null): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '线下评估';
+  if (raw.includes('腾讯会议') || raw.toLowerCase().includes('zoom')) return 'AI 面试考场';
+  if (raw.includes('AI 面试') || raw.includes('线上考场')) return 'AI 面试考场';
+  return raw;
+}
+
+function toExamStatus(value?: string | null): 'not_started' | 'in_progress' | 'completed' {
+  const key = String(value ?? '').trim().toLowerCase();
+  if (key === 'completed' || key === 'cancelled' || key === 'no_show' || key === 'failed') return 'completed';
+  if (key === 'in_progress') return 'in_progress';
+  return 'not_started';
+}
+
+function toExamStatusLabel(value?: string | null): string {
+  const status = toExamStatus(value);
+  if (status === 'in_progress') return '进行中';
+  if (status === 'completed') return '已完成';
+  return '未开始';
+}
+
+function toExamStatusClass(value?: string | null): string {
+  const status = toExamStatus(value);
+  if (status === 'in_progress') return 'border-[#f1d8de] bg-[#fff6f8] text-[#8e3550]';
+  if (status === 'completed') return 'border-primary/20 bg-primary/10 text-primary';
+  return 'border-[#d6e2f1] bg-white text-[#6b86a4]';
 }
 
 function normalizeRecommendationKey(value?: string | null): 'hire' | 'hold' | 'needs_review' | 'reject' | 'pending' {
@@ -319,24 +349,6 @@ function formatProctoringEvidence(item: unknown): string {
   if (summary) return `摄像头监考：${summary}`;
   if (eventCount > 0) return `摄像头监考：记录到 ${eventCount} 次异常`;
   return '';
-}
-
-function getProctoringSnapshotPaths(report: ScoreReportView | null): string[] {
-  if (!report) return [];
-
-  const paths: string[] = [];
-  for (const item of report.evidence ?? []) {
-    if (!isRecord(item) || item.type !== 'proctoring') continue;
-    const snapshotPaths = Array.isArray(item.snapshot_paths) ? item.snapshot_paths : [];
-    for (const path of snapshotPaths) {
-      const normalized = String(path ?? '').trim();
-      if (normalized && !paths.includes(normalized)) {
-        paths.push(normalized);
-      }
-    }
-  }
-
-  return paths.slice(0, 12);
 }
 
 function formatReportTime(value: unknown): string {
@@ -607,7 +619,6 @@ export default function Interviews() {
   const [deletingInterviewId, setDeletingInterviewId] = useState<string | null>(null);
   const [isPrefillFlow, setIsPrefillFlow] = useState(false);
   const [returnToPath, setReturnToPath] = useState<string | null>(null);
-  const [runtimeBusyInterviewId, setRuntimeBusyInterviewId] = useState<string | null>(null);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportInterviewName, setReportInterviewName] = useState('');
   const [reportData, setReportData] = useState<ScoreReportView | null>(null);
@@ -653,27 +664,13 @@ export default function Interviews() {
     }));
   };
 
-  const getTimeRemaining = (timeStr: string | null | undefined) => {
-    if (!timeStr) return null;
-    const scheduledAt = new Date(timeStr).getTime();
-    if (Number.isNaN(scheduledAt)) return null;
+  const getTimeRemaining = (interview: Pick<InterviewRow, 'status' | 'started_at'> | null | undefined) => {
+    if (String(interview?.status ?? '').trim().toLowerCase() !== 'in_progress') return null;
+    if (!interview?.started_at) return null;
+    const startedAt = new Date(interview.started_at).getTime();
+    if (Number.isNaN(startedAt)) return null;
 
-    const startDiffMin = Math.ceil((scheduledAt - clockNow) / 60000);
-    if (startDiffMin > 0) {
-      if (startDiffMin <= 60) {
-        return {
-          label: `距开始 ${formatMinutes(startDiffMin)}`,
-          color: 'text-error bg-error/10 border-error/20 animate-pulse',
-          pulse: true
-        };
-      }
-      return {
-        label: `距开始 ${formatMinutes(startDiffMin)}`,
-        color: 'text-primary bg-primary/10 border-primary/20'
-      };
-    }
-
-    const endAt = scheduledAt + interviewDurationMinutes * 60 * 1000;
+    const endAt = startedAt + interviewDurationMinutes * 60 * 1000;
     const remainingMin = Math.ceil((endAt - clockNow) / 60000);
     if (remainingMin >= 0) {
       return {
@@ -691,22 +688,6 @@ export default function Interviews() {
     }
 
     return null;
-  };
-
-  const getCanEnter = (timeStr: string | null | undefined) => {
-    if (!timeStr) return false;
-    const scheduledAt = new Date(timeStr).getTime();
-    if (Number.isNaN(scheduledAt)) return false;
-
-    const diffMin = (scheduledAt - clockNow) / 60000;
-    return diffMin <= EARLY_ENTER_MINUTES && diffMin >= -interviewDurationMinutes;
-  };
-
-  const isEnded = (timeStr: string | null | undefined) => {
-    if (!timeStr) return false;
-    const scheduledAt = new Date(timeStr).getTime();
-    if (Number.isNaN(scheduledAt)) return false;
-    return clockNow > scheduledAt + interviewDurationMinutes * 60 * 1000;
   };
 
   const isRemote = (locationType: string | null | undefined) => {
@@ -749,9 +730,10 @@ export default function Interviews() {
     const { data: settingsData } = await supabase
       .from('company_settings')
       .select('interview_question_count')
-      .single();
+      .limit(1);
+    const settings = Array.isArray(settingsData) ? settingsData[0] : settingsData;
     setConfiguredQuestionCount(
-      normalizeInterviewQuestionCount((settingsData as { interview_question_count?: unknown } | null)?.interview_question_count)
+      normalizeInterviewQuestionCount((settings as { interview_question_count?: unknown } | null)?.interview_question_count)
     );
 
     const { data } = await supabase.from('upcoming_interviews').select('*').order('created_at', { ascending: false });
@@ -793,15 +775,40 @@ export default function Interviews() {
   };
 
   const handleCopyRoomLink = async (interview: InterviewRow) => {
-    const link = resolveInterviewRoomLink(interview);
-    const { data, error } = await supabase.functions.invoke('interview-room-password', {
-      body: {
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      alert('登录状态已失效，请重新登录后再复制考场链接。');
+      return;
+    }
+
+    let data: { password?: unknown } | null = null;
+    try {
+      const response = await fetch(`${getFastApiBaseUrl()}/api/interviews/room-password`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
         action: 'issue',
         interviewId: interview.id
+        })
+      });
+      const text = await response.text();
+      if (text) {
+        try {
+          data = JSON.parse(text) as { password?: unknown };
+        } catch {
+          throw new Error(text.trim() || `HTTP ${response.status}`);
+        }
       }
-    });
-
-    if (error) {
+      if (!response.ok) {
+        const detail = data && typeof data === 'object' && 'detail' in data ? String((data as { detail?: unknown }).detail ?? '') : '';
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+    } catch (error) {
       alert(`生成考场密码失败：${toErrorMessage(error, 'unknown error')}`);
       return;
     }
@@ -813,6 +820,8 @@ export default function Interviews() {
     }
 
     await fetchInterviews();
+    const roomPath = buildInterviewRoomPathWithPassword(interview.id, roomPassword);
+    const link = `${window.location.origin}${roomPath}`;
     const clipboardText = `候选人考场链接：${link}\n进入密码：${roomPassword}`;
     try {
       await navigator.clipboard.writeText(clipboardText);
@@ -838,39 +847,6 @@ export default function Interviews() {
     setReportData(null);
     setReportSnapshots([]);
     setReportModalFullscreen(false);
-  };
-
-  const openReportModal = (interview: InterviewRow, report: ScoreReportView) => {
-    setReportInterviewName(interview.name || '候选人');
-    const normalizedReport = {
-      ...report,
-      summary: normalizeReportText(report.summary)
-    };
-    setReportData(normalizedReport);
-    setReportSnapshots([]);
-    setReportModalFullscreen(false);
-    setReportModalOpen(true);
-
-    const paths = getProctoringSnapshotPaths(normalizedReport);
-    if (paths.length > 0) {
-      supabase.storage
-        .from(PROCTORING_BUCKET)
-        .createSignedUrls(paths, 60 * 30)
-        .then(({ data, error }) => {
-          if (error) {
-            console.warn('生成监考关键帧访问链接失败:', error.message);
-            return;
-          }
-
-          const snapshots = (data ?? [])
-            .map((item, index) => ({
-              path: item.path || paths[index] || '',
-              url: item.signedUrl || ''
-            }))
-            .filter((item) => item.path && item.url);
-          setReportSnapshots(snapshots);
-        });
-    }
   };
 
   const interviewsWithReport = useMemo(
@@ -999,7 +975,7 @@ export default function Interviews() {
       position: prefill.title || '',
       schedule_time: defaultDatetimeLocal(),
       interviewer: '',
-      location_type: '腾讯会议 (云端评估)'
+      location_type: 'AI 面试（线上考场）'
     });
     setEditingId(null);
     setIsPrefillFlow(true);
@@ -1116,173 +1092,12 @@ export default function Interviews() {
     await fetchInterviews();
   };
 
-  const handleFinishAndScore = async (interview: InterviewRow) => {
-    const sessionId = String(interview.session_id ?? '').trim();
-    if (!sessionId) {
-      alert('当前面试尚未生成 session，请先启动 AI 初面');
-      return;
-    }
-
-    setRuntimeBusyInterviewId(interview.id);
-    try {
-      await interviewRuntimeEdge.finishInterview<any>({
-        interviewId: interview.id,
-        sessionId
-      });
-
-      const scored = await interviewRuntimeEdge.scoreInterview<any>({
-        interviewId: interview.id,
-        sessionId
-      });
-
-      await fetchInterviews();
-      const report = scored?.report ? mapReportRowToView(scored.report as InterviewReportRow) : null;
-        if (!report) {
-          alert('评分完成，但报告内容为空');
-          return;
-        }
-
-        openReportModal(interview, {
-          ...report,
-          interview_id: interview.id,
-          human_confirmed: false,
-          human_confirmed_at: null
-        });
-      } catch (error) {
-        alert(`结束并评分失败：${toErrorMessage(error, 'unknown error')}`);
-      } finally {
-        setRuntimeBusyInterviewId(null);
-      }
-  };
-
-    const handleOpenReport = async (interview: InterviewRow) => {
-      const cached = reportByInterviewId[interview.id];
-      if (cached) {
-        openReportModal(interview, cached);
-        return;
-      }
-
-    setRuntimeBusyInterviewId(interview.id);
-    try {
-      const report = await fetchInterviewReportByInterview(interview.id);
-      if (!report) {
-        alert('当前场次尚未生成评分报告');
-        return;
-      }
-
-        const mapped = mapReportRowToView(report);
-        setReportByInterviewId((prev) => ({ ...prev, [interview.id]: mapped }));
-        openReportModal(interview, mapped);
-      } catch (error) {
-        alert(`读取评分报告失败：${toErrorMessage(error, 'unknown error')}`);
-      } finally {
-        setRuntimeBusyInterviewId(null);
-      }
-  };
-
-  const getPrimaryAction = (interview: InterviewRow) => {
-    const status = String(interview.status ?? '').trim().toLowerCase();
-    const hasReport = Boolean(reportByInterviewId[interview.id]) || Boolean(interview.ai_report_id);
-    const hasSession = Boolean(String(interview.session_id ?? '').trim());
-    const ended = isEnded(interview.schedule_time);
-    const canEnter = getCanEnter(interview.schedule_time);
-
-    if (hasReport) {
-      return {
-        type: 'view_report' as const,
-        label: '查看报告',
-        disabled: false,
-        style: 'secondary'
-      };
-    }
-
-    if (status === 'in_progress') {
-      return {
-        type: 'finish' as const,
-        label: '结束并出报告',
-        disabled: false,
-        style: 'danger'
-      };
-    }
-
-    if (hasSession && canEnter) {
-      return {
-        type: 'enter' as const,
-        label: '进入专属考场页',
-        disabled: false,
-        style: 'primary'
-      };
-    }
-
-    if (ended) {
-      return {
-        type: 'none' as const,
-        label: '面试已结束',
-        disabled: true,
-        style: 'muted'
-      };
-    }
-
-    if (!canEnter) {
-      return {
-        type: 'none' as const,
-        label: '未到开放时间',
-        disabled: true,
-        style: 'muted'
-      };
-    }
-
-    return {
-      type: 'enter' as const,
-      label: '进入专属考场页',
-      disabled: false,
-      style: 'primary'
-    };
-  };
-
-  const getStepStates = (interview: InterviewRow) => {
-    const status = String(interview.status ?? '').trim().toLowerCase();
-    const hasSession = Boolean(String(interview.session_id ?? '').trim());
-    const hasReport = Boolean(interview.ai_report_id);
-
-    const prepareDone = hasSession;
-    const startDone = status === 'in_progress' || status === 'completed';
-    const turnDone = status === 'completed';
-    const turnActive = status === 'in_progress';
-    const finishDone = status === 'completed';
-    const scoreDone = hasReport;
-
-    return [
-      { key: 'prepare', label: '准备', state: prepareDone ? 'done' : 'todo' },
-      { key: 'start', label: '开始', state: startDone ? 'done' : prepareDone ? 'active' : 'todo' },
-      { key: 'turn', label: '问答', state: turnDone ? 'done' : turnActive ? 'active' : 'todo' },
-      { key: 'finish', label: '结束', state: finishDone ? 'done' : turnActive ? 'active' : 'todo' },
-      { key: 'score', label: '评分', state: scoreDone ? 'done' : finishDone ? 'active' : 'todo' }
-    ] as const;
-  };
-
-  const handlePrimaryAction = async (interview: InterviewRow) => {
-    const action = getPrimaryAction(interview);
-    if (action.type === 'enter') {
-      handleOpenRoomPage(interview);
-      return;
-    }
-    if (action.type === 'finish') {
-      await handleFinishAndScore(interview);
-      return;
-    }
-    if (action.type === 'view_report') {
-      await handleOpenReport(interview);
-    }
-  };
-
   const selectedInterviewEntry =
     visibleInterviews.find(({ interview }) => interview.id === selectedInterviewId) ?? visibleInterviews[0] ?? null;
 
   const selectedInterview = selectedInterviewEntry?.interview ?? null;
   const selectedReport = selectedInterviewEntry?.report;
-  const selectedAction = selectedInterview ? getPrimaryAction(selectedInterview) : null;
-  const selectedTimeRemaining = selectedInterview ? getTimeRemaining(selectedInterview.schedule_time) : null;
+  const selectedTimeRemaining = selectedInterview ? getTimeRemaining(selectedInterview) : null;
   const activeInterviewRows = interviewsWithReport
     .map(({ interview }) => interview)
     .filter((interview) => String(interview.status ?? '').trim().toLowerCase() === 'in_progress');
@@ -1416,25 +1231,6 @@ export default function Interviews() {
                     </span>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {selectedAction ? (
-                      <button
-                        type="button"
-                        onClick={() => void handlePrimaryAction(selectedInterview)}
-                        disabled={selectedAction.disabled || runtimeBusyInterviewId === selectedInterview.id}
-                        className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium transition ${
-                          selectedAction.style === 'danger'
-                            ? 'bg-[#8e3550] text-white hover:bg-[#7b2d45]'
-                            : selectedAction.style === 'secondary'
-                              ? 'border border-[#c7daf6] bg-white text-[#1f5fbf] hover:bg-[#f4f8ff]'
-                              : selectedAction.style === 'muted'
-                                ? 'cursor-not-allowed bg-[#dfe8f3] text-[#6b86a4]'
-                                : 'bg-[#1f5fbf] text-white hover:bg-[#194f9e]'
-                        }`}
-                      >
-                        <ChevronRight className="h-4 w-4" />
-                        {runtimeBusyInterviewId === selectedInterview.id ? '处理中...' : selectedAction.label}
-                      </button>
-                    ) : null}
                     <button
                       type="button"
                       onClick={() => openEditModal(selectedInterview)}
@@ -1949,63 +1745,60 @@ export default function Interviews() {
               </p>
             </div>
           ) : (
-            visibleInterviews.map(({ interview, report }, idx) => (
-              <button
+            visibleInterviews.map(({ interview, report }) => (
+              <article
                 key={interview.id}
-                type="button"
                 onClick={() => setSelectedInterviewId(interview.id)}
-                className={`relative w-full overflow-hidden rounded-[24px] border p-5 text-left transition ${
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedInterviewId(interview.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className={`relative w-full cursor-pointer overflow-hidden rounded-[22px] border p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-[#86aee7]/70 ${
                   interview.id === selectedInterview?.id
                   ? 'border-[#86aee7] bg-[#f7fbff] shadow-[0_14px_32px_-28px_rgba(21,53,102,0.18)]'
-                    : idx === 0
-                          ? 'border-[#f1d8de] bg-[#fffafb] shadow-[0_14px_30px_-28px_rgba(142,53,80,0.18)]'
-                      : 'border-[#dde8f5] bg-white hover:border-[#aac6ea] hover:bg-[#fbfdff]'
+                    : 'border-[#dde8f5] bg-white hover:border-[#aac6ea] hover:bg-[#fbfdff]'
                 }`}
               >
-                <div className="flex justify-between items-start mb-4">
-                  <div>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-semibold text-[#16355f]">{interview.stage || '待定轮次'}</h3>
-                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#24476b]">
-                        {toStatusLabel(interview.status)}
+                      <h3 className="min-w-0 max-w-full truncate text-base font-semibold text-[#16355f]">{interview.stage || '待定轮次'}</h3>
+                      <span className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${toExamStatusClass(interview.status)}`}>
+                        {toExamStatusLabel(interview.status)}
                       </span>
                       {report ? (
-                        <span className="rounded-full border border-[#c7daf6] bg-[#eef5ff] px-2.5 py-1 text-[11px] text-[#1f5fbf]">
+                        <span className="inline-flex shrink-0 items-center rounded-full border border-[#c7daf6] bg-[#eef5ff] px-2.5 py-1 text-[11px] font-semibold text-[#1f5fbf]">
                           {toRecommendationLabel(report.recommendation)}
                         </span>
                       ) : null}
+                      {(() => {
+                        const res = getTimeRemaining(interview);
+                        if (!res) return null;
+                        return (
+                          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#24476b]">
+                            <Bell className="h-3 w-3" /> {res.label}
+                          </span>
+                        );
+                      })()}
                     </div>
-                    <p className="mt-1.5 text-sm font-medium text-[#24476b]">候选人：{interview.name}</p>
-                    <p className="mt-2 inline-flex w-fit rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#1f5fbf]">
-                      {interview.position || '未关联岗位'}
+
+                    <p className="mt-2 min-w-0 text-sm font-medium text-[#24476b]">
+                      候选人：{interview.name || '未命名候选人'}
+                      <span className="mx-2 text-[#aac0da]">·</span>
+                      <span className="text-[#1f5fbf]">{interview.position || '未关联岗位'}</span>
                     </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
-                        总分: {report?.overall_score ?? '待评分'}
-                      </span>
-                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
-                        风险: {report?.risk_score ?? '-'}
-                      </span>
-                      <span className="rounded-full border border-[#d6e2f1] bg-white px-2.5 py-1 text-[11px] text-[#56718f]">
-                        进度: {extractAnsweredProgress(report)}
-                      </span>
-                    </div>
                   </div>
-                  <div className="flex flex-col items-end gap-2">
-                    {(() => {
-                      const res = getTimeRemaining(interview.schedule_time);
-                      if (!res) return null;
-                      return (
-                        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#d6e2f1] bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#24476b]">
-                          <Bell className={`w-3 h-3 ${res.pulse ? 'animate-bounce' : ''}`} /> {res.label}
-                        </span>
-                      );
-                    })()}
-                      <div className="flex gap-2">
+
+                  <div className="flex shrink-0 gap-2">
                       <button
                         onClick={(event) => { event.stopPropagation(); openEditModal(interview); }}
                         disabled={deletingInterviewId === interview.id}
                         className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-white hover:text-[#1f5fbf] disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="编辑排期"
                       >
                         <Pencil className="w-4 h-4" />
                       </button>
@@ -2031,132 +1824,42 @@ export default function Interviews() {
                           onClick={(event) => { event.stopPropagation(); setConfirmDeleteId(interview.id); }}
                           disabled={deletingInterviewId === interview.id}
                           className="cursor-pointer rounded-xl p-2 text-[#56718f] transition hover:bg-[#fff1f4] hover:text-[#8e3550] disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label="删除排期"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}
-                    </div>
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center gap-6 border-t border-[#e4edf8] pt-4">
-                  <div className="flex items-center gap-1.5 text-sm font-medium text-[#24476b]">
-                    <Clock className="w-4 h-4 text-[#6b86a4]" />
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#e4edf8] pt-3 text-xs font-medium text-[#56718f]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5 text-[#6b86a4]" />
                     {formatScheduleDateTime(interview.schedule_time)}
-                  </div>
-                  <div className={`flex items-center gap-1.5 text-sm font-medium ${isRemote(interview.location_type) ? 'text-[#1f5fbf]' : 'text-[#6b86a4]'}`}>
-                    <Video className="w-4 h-4" /> {interview.location_type || '线下评估'}
-                  </div>
+                  </span>
+                  <span className={`inline-flex items-center gap-1.5 ${isRemote(interview.location_type) ? 'text-[#1f5fbf]' : 'text-[#6b86a4]'}`}>
+                    <Video className="h-3.5 w-3.5" /> {formatLocationType(interview.location_type)}
+                  </span>
+                  <span>总分 {report?.overall_score ?? '待评分'}</span>
+                  <span>风险 {report?.risk_score ?? '-'}</span>
+                  <span>进度 {extractAnsweredProgress(report)}</span>
                 </div>
 
-                <div className="mt-5">
-                  {isRemote(interview.location_type) ? (
-                    (() => {
-                      const primaryAction = getPrimaryAction(interview);
-                      const stepStates = getStepStates(interview);
-                      const busy = runtimeBusyInterviewId === interview.id;
-                      const canEnter = getCanEnter(interview.schedule_time);
-                      const ended = isEnded(interview.schedule_time);
-
-                      const primaryClass = primaryAction.style === 'danger'
-                        ? 'bg-secondary text-white hover:bg-secondary/90'
-                        : primaryAction.style === 'secondary'
-                          ? 'bg-primary-container/40 text-primary border border-primary/20 hover:bg-primary-container/55'
-                          : primaryAction.style === 'muted'
-                            ? 'bg-surface-container-high text-on-surface-variant/70'
-                            : 'bg-primary text-white hover:bg-primary/90';
-
-                      const busyLabel = primaryAction.type === 'enter'
-                        ? '启动中...'
-                        : primaryAction.type === 'finish'
-                          ? '处理中...'
-                          : '加载中...';
-
-                      return (
-                        <div className="w-full space-y-3 rounded-[22px] border border-[#d6e2f1] bg-[#f8fbff] p-4">
-                          <div className="flex flex-wrap items-center gap-2.5">
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void handlePrimaryAction(interview);
-                              }}
-                              disabled={primaryAction.disabled || busy}
-                              className={`cursor-pointer text-xs font-semibold h-9 px-4 rounded-md transition-colors shadow-sm inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed ${primaryClass}`}
-                            >
-                              <Video className="w-3.5 h-3.5" />
-                              {busy ? busyLabel : primaryAction.label}
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-5 gap-1.5">
-                            {stepStates.map((step) => (
-                              <div
-                                key={step.key}
-                                className={`rounded-md border px-2 py-1 text-[11px] text-center font-medium ${
-                                  step.state === 'done'
-                                    ? 'border-[#c7daf6] bg-[#eef5ff] text-[#1f5fbf]'
-                                    : step.state === 'active'
-                                      ? 'border-[#f1d8de] bg-[#fff6f8] text-[#8e3550]'
-                                      : 'border-[#d6e2f1] bg-white text-[#6b86a4]'
-                                }`}
-                              >
-                                {step.label}
-                              </div>
-                            ))}
-                          </div>
-
-                          <div>
-                            {primaryAction.type === 'view_report' ? (
-                              <span className="inline-flex items-center rounded-md bg-primary/10 px-2.5 py-1 text-[11px] text-primary/85">
-                                已完成，点击主按钮查看报告
-                              </span>
-                            ) : ended ? (
-                              <span className="inline-flex items-center rounded-md bg-surface-container-high px-2.5 py-1 text-[11px] text-on-surface-variant/80">
-                                面试窗口已结束，建议人工复核本场状态
-                              </span>
-                            ) : !canEnter ? (
-                              <span className="inline-flex items-center rounded-md bg-surface-container-high px-2.5 py-1 text-[11px] text-on-surface-variant/80">
-                                开始前 5 分钟开放进入
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center rounded-md bg-primary/10 px-2.5 py-1 text-[11px] text-primary/85">
-                                当前可进入考场
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="mt-1 flex flex-wrap items-center gap-2 pt-3 border-t border-outline-variant/15">
-                            <button
-                              onClick={(event) => { event.stopPropagation(); handleOpenRoomPage(interview); }}
-                              className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#24476b] transition hover:bg-[#f3f8ff]"
-                            >
-                              打开考场页
-                            </button>
-                            <button
-                              onClick={(event) => { event.stopPropagation(); void handleCopyRoomLink(interview); }}
-                              className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#56718f] transition hover:bg-[#f3f8ff]"
-                            >
-                              复制链接+密码
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })()
-                  ) : (
-                    <div className="flex flex-col gap-1.5">
-                      <button
-                        disabled
-                        className="cursor-not-allowed bg-surface-container-high text-on-surface-variant/40 text-[11px] font-bold px-4 py-2.5 rounded shadow-sm flex items-center gap-2 border border-outline-variant/10"
-                      >
-                        <Video className="w-3.5 h-3.5 opacity-30" /> 进入线上考场
-                      </button>
-                      <div className="flex items-center gap-2 text-on-surface-variant/30 text-[11px] font-bold uppercase bg-surface-container-low px-3 py-2 rounded border border-dashed border-outline-variant/20 italic">
-                        <HelpCircle className="w-3.5 h-3.5" /> 非线上考核 / 线下
-                      </div>
-                    </div>
-                  )}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={(event) => { event.stopPropagation(); handleOpenRoomPage(interview); }}
+                    className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#24476b] transition hover:bg-[#f3f8ff]"
+                  >
+                    打开考场页
+                  </button>
+                  <button
+                    onClick={(event) => { event.stopPropagation(); void handleCopyRoomLink(interview); }}
+                    className="h-8 cursor-pointer rounded-md border border-[#d6e2f1] bg-white px-3 text-xs font-medium text-[#56718f] transition hover:bg-[#f3f8ff]"
+                  >
+                    复制链接+密码
+                  </button>
                 </div>
-              </button>
+              </article>
             ))
           )}
             </div>

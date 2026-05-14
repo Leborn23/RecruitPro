@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>RecruitPro Promo</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #f3f7fc;
+        color: #0f172a;
+        font-family: "Manrope", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      }
+
+      #recruitpro-promo {
+        width: 1920px;
+        height: 1080px;
+        position: relative;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 10% 18%, rgba(31, 111, 235, 0.14), transparent 28%),
+          radial-gradient(circle at 78% 20%, rgba(125, 211, 252, 0.14), transparent 24%),
+          linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+      }
+
+      .ambient-grid,
+      .ambient-glow,
+      .ambient-glow-right,
+      .ambient-line {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .ambient-grid {
+        background-image:
+          linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+        background-size: 96px 96px;
+        opacity: 0.6;
+      }
+
+      .ambient-glow {
+        background: radial-gradient(circle at 20% 20%, rgba(31, 111, 235, 0.15), transparent 38%);
+      }
+
+      .ambient-glow-right {
+        background: radial-gradient(circle at 82% 24%, rgba(125, 211, 252, 0.18), transparent 30%);
+      }
+
+      .ambient-line {
+        inset: auto 120px 112px 120px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(31, 111, 235, 0.3), transparent);
+      }
+
+      .scene-shell {
+        position: absolute;
+        inset: 0;
+        padding: 88px 108px;
+      }
+
+      .scene-layout {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        gap: 42px;
+        align-items: stretch;
+      }
+
+      .scene-copy {
+        width: 680px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 28px;
+      }
+
+      .eyebrow {
+        width: fit-content;
+        padding: 12px 20px;
+        border-radius: 999px;
+        background: rgba(31, 111, 235, 0.1);
+        border: 1px solid rgba(31, 111, 235, 0.15);
+        color: #1657c0;
+        font-size: 23px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .headline {
+        font-size: 92px;
+        line-height: 0.95;
+        letter-spacing: -0.05em;
+        font-weight: 800;
+        color: #0f172a;
+        max-width: 640px;
+      }
+
+      .body-copy {
+        max-width: 620px;
+        color: #42526b;
+        font-size: 29px;
+        line-height: 1.45;
+        font-weight: 500;
+      }
+
+      .metric-row,
+      .chip-row {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+
+      .metric-pill,
+      .chip {
+        padding: 16px 22px;
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 18px 40px rgba(32, 78, 143, 0.08);
+        font-size: 24px;
+        font-weight: 700;
+        color: #10213d;
+      }
+
+      .frame-area {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+      }
+
+      .hero-frame,
+      .report-frame {
+        width: 1020px;
+        height: 702px;
+        padding: 22px;
+        border-radius: 36px;
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.95);
+        box-shadow: 0 36px 80px rgba(41, 80, 132, 0.16);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero-frame::before,
+      .report-frame::before {
+        content: "";
+        position: absolute;
+        inset: 22px;
+        border-radius: 28px;
+        box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+        pointer-events: none;
+      }
+
+      .screen-image {
+        width: 100%;
+        height: 100%;
+        border-radius: 24px;
+        background-position: center top;
+        background-size: cover;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+      }
+
+      .screen-tag {
+        position: absolute;
+        top: 54px;
+        right: 54px;
+        padding: 14px 18px;
+        border-radius: 18px;
+        background: rgba(248, 251, 255, 0.94);
+        color: #184ea9;
+        font-size: 22px;
+        font-weight: 800;
+        box-shadow: 0 12px 28px rgba(31, 111, 235, 0.12);
+      }
+
+      .scene-2-layout {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 42px;
+      }
+
+      .scene-2-copy {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 48px;
+      }
+
+      .scene-2-copy .headline {
+        max-width: 860px;
+      }
+
+      .scene-2-copy .body-copy {
+        max-width: 560px;
+      }
+
+      .card-stage {
+        flex: 1;
+        position: relative;
+      }
+
+      .workflow-card {
+        position: absolute;
+        width: 620px;
+        height: 420px;
+        padding: 18px;
+        border-radius: 34px;
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid rgba(255, 255, 255, 0.95);
+        box-shadow: 0 34px 76px rgba(38, 70, 122, 0.15);
+      }
+
+      .workflow-card .screen-image {
+        border-radius: 24px;
+      }
+
+      .workflow-card .card-label {
+        position: absolute;
+        left: 32px;
+        bottom: 28px;
+        padding: 12px 18px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.94);
+        color: #0f172a;
+        font-size: 24px;
+        font-weight: 800;
+      }
+
+      .card-positions {
+        left: 140px;
+        top: 64px;
+        transform: rotate(-7deg);
+      }
+
+      .card-screening {
+        left: 650px;
+        top: 30px;
+        transform: rotate(2deg);
+      }
+
+      .card-candidates {
+        right: 120px;
+        top: 110px;
+        transform: rotate(8deg);
+      }
+
+      .connector {
+        position: absolute;
+        height: 3px;
+        background: linear-gradient(90deg, rgba(31, 111, 235, 0.18), rgba(31, 111, 235, 0.58));
+        border-radius: 999px;
+        transform-origin: left center;
+      }
+
+      .connector-a {
+        width: 340px;
+        left: 590px;
+        top: 278px;
+        transform: rotate(-5deg);
+      }
+
+      .connector-b {
+        width: 360px;
+        left: 1086px;
+        top: 294px;
+        transform: rotate(11deg);
+      }
+
+      .report-layout {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        gap: 42px;
+        align-items: center;
+      }
+
+      .report-copy {
+        width: 560px;
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+      }
+
+      .report-stack {
+        flex: 1;
+        height: 100%;
+        position: relative;
+      }
+
+      .report-frame {
+        width: 960px;
+        height: 620px;
+        position: absolute;
+        right: 56px;
+        top: 170px;
+      }
+
+      .report-card {
+        position: absolute;
+        left: 36px;
+        top: 220px;
+        width: 380px;
+        padding: 28px;
+        border-radius: 28px;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 24px 58px rgba(31, 59, 100, 0.14);
+      }
+
+      .report-card-title {
+        font-size: 24px;
+        font-weight: 700;
+        color: #516076;
+        margin-bottom: 18px;
+      }
+
+      .report-score {
+        font-size: 96px;
+        font-weight: 800;
+        letter-spacing: -0.06em;
+        color: #0f172a;
+        line-height: 0.9;
+      }
+
+      .report-score span {
+        font-size: 34px;
+        color: #617186;
+        margin-left: 8px;
+      }
+
+      .report-bars {
+        margin-top: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .bar-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .bar-label {
+        width: 110px;
+        font-size: 20px;
+        font-weight: 700;
+        color: #607188;
+      }
+
+      .bar-track {
+        flex: 1;
+        height: 14px;
+        border-radius: 999px;
+        background: #e5edf7;
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #1f6feb, #58a6ff);
+      }
+
+      .decision-pill {
+        margin-top: 24px;
+        width: fit-content;
+        padding: 14px 20px;
+        border-radius: 999px;
+        background: rgba(30, 186, 132, 0.12);
+        color: #11895e;
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .final-scene {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+      }
+
+      .brand-panel {
+        width: 1360px;
+        padding: 84px 92px;
+        border-radius: 42px;
+        background: rgba(255, 255, 255, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.96);
+        box-shadow: 0 34px 80px rgba(33, 70, 122, 0.18);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 60px;
+      }
+
+      .brand-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .brand-mark {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+
+      .brand-icon {
+        width: 84px;
+        height: 84px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+        color: #0f4fb3;
+        border: 1px solid rgba(31, 111, 235, 0.18);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 42px;
+        font-weight: 800;
+        box-shadow: 0 16px 40px rgba(31, 111, 235, 0.18);
+      }
+
+      .brand-name {
+        font-size: 62px;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+        color: #0f172a;
+      }
+
+      .brand-subtitle {
+        font-size: 26px;
+        color: #5b6d86;
+        font-weight: 600;
+      }
+
+      .brand-headline {
+        max-width: 620px;
+        font-size: 78px;
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+        font-weight: 800;
+        color: #0f172a;
+      }
+
+      .brand-tail {
+        padding: 22px 28px;
+        border-radius: 26px;
+        background: linear-gradient(180deg, rgba(31, 111, 235, 0.1), rgba(125, 211, 252, 0.16));
+        border: 1px solid rgba(31, 111, 235, 0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        min-width: 320px;
+      }
+
+      .brand-tail-label {
+        font-size: 21px;
+        font-weight: 700;
+        color: #5a6d86;
+      }
+
+      .brand-tail-value {
+        font-size: 42px;
+        font-weight: 800;
+        color: #0f172a;
+        letter-spacing: -0.04em;
+      }
+
+      .brand-tail-note {
+        font-size: 22px;
+        line-height: 1.4;
+        color: #40526a;
+        font-weight: 600;
+      }
+
+      .screenshot-dashboard {
+        background-image: url("assets/dashboard.png");
+      }
+
+      .screenshot-positions {
+        background-image: url("assets/positions.png");
+      }
+
+      .screenshot-screening {
+        background-image: url("assets/screening.png");
+      }
+
+      .screenshot-candidates {
+        background-image: url("assets/candidates.png");
+      }
+
+      .screenshot-interviews {
+        background-image: url("assets/interviews.png");
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="recruitpro-promo"
+      data-composition-id="recruitpro-promo"
+      data-start="0"
+      data-duration="10"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div class="ambient-grid"></div>
+      <div class="ambient-glow"></div>
+      <div class="ambient-glow-right"></div>
+      <div class="ambient-line"></div>
+
+      <section id="scene-1" class="scene-shell">
+        <div class="scene-layout">
+          <div class="scene-copy">
+            <div id="s1-eyebrow" class="eyebrow">RecruitPro 智能招聘管理平台</div>
+            <div id="s1-headline" class="headline">招聘流程不该被切碎</div>
+            <div id="s1-body" class="body-copy">
+              从岗位发布、候选人跟进，到 AI 筛选与面试安排，把招聘流程收回到一个系统里。
+            </div>
+            <div class="metric-row">
+              <div id="s1-metric-a" class="metric-pill">岗位管理</div>
+              <div id="s1-metric-b" class="metric-pill">简历筛选</div>
+              <div id="s1-metric-c" class="metric-pill">面试协同</div>
+            </div>
+          </div>
+          <div class="frame-area">
+            <div id="s1-frame" class="hero-frame">
+              <div class="screen-image screenshot-dashboard"></div>
+            </div>
+            <div id="s1-tag" class="screen-tag">决策看板</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-2" class="scene-shell">
+        <div class="scene-2-layout">
+          <div class="scene-2-copy">
+            <div>
+              <div id="s2-eyebrow" class="eyebrow">Flow In One Place</div>
+              <div id="s2-headline" class="headline">岗位到候选人集中推进</div>
+            </div>
+            <div id="s2-body" class="body-copy">
+              职位、筛选、候选人列表同步串联，HR 不再在多个表格和系统之间来回切换。
+            </div>
+          </div>
+          <div class="card-stage">
+            <div id="s2-card-a" class="workflow-card card-positions">
+              <div class="screen-image screenshot-positions"></div>
+              <div class="card-label">岗位管理</div>
+            </div>
+            <div id="s2-card-b" class="workflow-card card-screening">
+              <div class="screen-image screenshot-screening"></div>
+              <div class="card-label">AI 筛选</div>
+            </div>
+            <div id="s2-card-c" class="workflow-card card-candidates">
+              <div class="screen-image screenshot-candidates"></div>
+              <div class="card-label">候选人跟进</div>
+            </div>
+            <div id="s2-connector-a" class="connector connector-a"></div>
+            <div id="s2-connector-b" class="connector connector-b"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-3" class="scene-shell">
+        <div class="report-layout">
+          <div class="report-copy">
+            <div id="s3-eyebrow" class="eyebrow">Interview + AI Report</div>
+            <div id="s3-headline" class="headline">筛选、面试、判断连成闭环</div>
+            <div id="s3-body" class="body-copy">
+              面试安排和 AI 结构化结论留在同一条业务链路里，决策信息更快汇总、更清晰可见。
+            </div>
+            <div class="chip-row">
+              <div id="s3-chip-a" class="chip">流程在线推进</div>
+              <div id="s3-chip-b" class="chip">AI 结论辅助</div>
+            </div>
+          </div>
+          <div class="report-stack">
+            <div id="s3-frame" class="report-frame">
+              <div class="screen-image screenshot-interviews"></div>
+            </div>
+            <div id="s3-card" class="report-card">
+              <div class="report-card-title">候选人综合判断</div>
+              <div class="report-score">86<span>/100</span></div>
+              <div class="report-bars">
+                <div class="bar-row">
+                  <div class="bar-label">匹配度</div>
+                  <div class="bar-track"><div class="bar-fill" style="width: 88%"></div></div>
+                </div>
+                <div class="bar-row">
+                  <div class="bar-label">沟通力</div>
+                  <div class="bar-track"><div class="bar-fill" style="width: 82%"></div></div>
+                </div>
+                <div class="bar-row">
+                  <div class="bar-label">风险项</div>
+                  <div class="bar-track"><div class="bar-fill" style="width: 34%"></div></div>
+                </div>
+              </div>
+              <div class="decision-pill">建议进入下一轮</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-4" class="scene-shell">
+        <div class="final-scene">
+          <div id="s4-panel" class="brand-panel">
+            <div class="brand-copy">
+              <div id="s4-mark" class="brand-mark">
+                <div class="brand-icon">R</div>
+                <div>
+                  <div class="brand-name">RecruitPro</div>
+                  <div class="brand-subtitle">智能招聘后台</div>
+                </div>
+              </div>
+              <div id="s4-headline" class="brand-headline">让招聘流程真正跑起来</div>
+            </div>
+            <div id="s4-tail" class="brand-tail">
+              <div class="brand-tail-label">统一招聘工作流</div>
+              <div class="brand-tail-value">岗位 · 筛选 · 面试 · 决策</div>
+              <div class="brand-tail-note">为 HR 提供更顺手的流程管理和更清晰的判断依据。</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <script>
+        window.__timelines = window.__timelines || {};
+
+        const tl = gsap.timeline({ paused: true });
+
+        gsap.set("#scene-2", { clipPath: "inset(0 100% 0 0 round 48px)" });
+        gsap.set("#scene-3", { clipPath: "inset(100% 0 0 0 round 48px)" });
+        gsap.set("#scene-4", { clipPath: "circle(0% at 50% 50%)" });
+
+        tl.from(".ambient-grid", { opacity: 0, duration: 0.8, ease: "power2.out" }, 0.1);
+        tl.from(".ambient-glow", { x: -80, opacity: 0, duration: 1.1, ease: "sine.out" }, 0.18);
+        tl.from(".ambient-glow-right", { x: 80, opacity: 0, duration: 1.15, ease: "power1.out" }, 0.24);
+
+        tl.from("#s1-eyebrow", { y: 26, opacity: 0, duration: 0.55, ease: "power3.out" }, 0.18);
+        tl.from("#s1-headline", { y: 42, opacity: 0, duration: 0.7, ease: "expo.out" }, 0.28);
+        tl.from("#s1-body", { x: -28, opacity: 0, duration: 0.58, ease: "power2.out" }, 0.45);
+        tl.from("#s1-metric-a", { y: 30, opacity: 0, duration: 0.44, ease: "back.out(1.4)" }, 0.62);
+        tl.from("#s1-metric-b", { scale: 0.9, opacity: 0, duration: 0.42, ease: "power2.out" }, 0.72);
+        tl.from("#s1-metric-c", { x: 24, opacity: 0, duration: 0.44, ease: "circ.out" }, 0.8);
+        tl.from("#s1-frame", { x: 56, y: 24, scale: 0.94, opacity: 0, duration: 0.82, ease: "power3.out" }, 0.34);
+        tl.from("#s1-tag", { y: -18, opacity: 0, duration: 0.5, ease: "back.out(1.6)" }, 0.7);
+
+        tl.from("#scene-2", { clipPath: "inset(0 100% 0 0 round 48px)", duration: 0.72, ease: "expo.out" }, 1.9);
+        tl.from("#s2-eyebrow", { y: 24, opacity: 0, duration: 0.44, ease: "power2.out" }, 2.02);
+        tl.from("#s2-headline", { x: -40, opacity: 0, duration: 0.66, ease: "power3.out" }, 2.12);
+        tl.from("#s2-body", { y: 32, opacity: 0, duration: 0.56, ease: "circ.out" }, 2.22);
+        tl.from("#s2-card-a", { x: -120, y: 34, rotation: -13, opacity: 0, duration: 0.76, ease: "back.out(1.2)" }, 2.16);
+        tl.from("#s2-card-b", { y: 60, scale: 0.92, opacity: 0, duration: 0.72, ease: "power2.out" }, 2.3);
+        tl.from("#s2-card-c", { x: 120, y: 28, rotation: 14, opacity: 0, duration: 0.78, ease: "expo.out" }, 2.42);
+        tl.from("#s2-connector-a", { scaleX: 0, opacity: 0, duration: 0.46, ease: "sine.out" }, 2.52);
+        tl.from("#s2-connector-b", { scaleX: 0, opacity: 0, duration: 0.46, ease: "power1.out" }, 2.62);
+
+        tl.from("#scene-3", { clipPath: "inset(100% 0 0 0 round 48px)", duration: 0.76, ease: "expo.out" }, 4.75);
+        tl.from("#s3-eyebrow", { y: 22, opacity: 0, duration: 0.42, ease: "power3.out" }, 4.9);
+        tl.from("#s3-headline", { y: 38, opacity: 0, duration: 0.62, ease: "expo.out" }, 5.0);
+        tl.from("#s3-body", { x: -30, opacity: 0, duration: 0.54, ease: "power2.out" }, 5.14);
+        tl.from("#s3-chip-a", { y: 20, opacity: 0, duration: 0.42, ease: "back.out(1.3)" }, 5.28);
+        tl.from("#s3-chip-b", { x: 20, opacity: 0, duration: 0.4, ease: "circ.out" }, 5.36);
+        tl.from("#s3-frame", { x: 72, scale: 0.95, opacity: 0, duration: 0.82, ease: "power3.out" }, 5.02);
+        tl.from("#s3-card", { x: -54, y: 24, scale: 0.92, opacity: 0, duration: 0.68, ease: "back.out(1.25)" }, 5.24);
+
+        tl.from("#scene-4", { clipPath: "circle(0% at 50% 50%)", duration: 0.82, ease: "expo.out" }, 7.35);
+        tl.from("#s4-panel", { scale: 0.96, opacity: 0, duration: 0.7, ease: "power2.out" }, 7.46);
+        tl.from("#s4-mark", { x: -24, opacity: 0, duration: 0.5, ease: "power3.out" }, 7.58);
+        tl.from("#s4-headline", { y: 34, opacity: 0, duration: 0.62, ease: "expo.out" }, 7.68);
+        tl.from("#s4-tail", { x: 28, opacity: 0, duration: 0.54, ease: "circ.out" }, 7.84);
+
+        tl.to("#scene-4", { opacity: 0, duration: 0.5, ease: "power2.in" }, 9.4);
+        tl.to(".ambient-grid", { opacity: 0, duration: 0.5, ease: "power2.in" }, 9.45);
+        tl.to(".ambient-glow", { opacity: 0, duration: 0.5, ease: "power2.in" }, 9.45);
+        tl.to(".ambient-glow-right", { opacity: 0, duration: 0.5, ease: "power2.in" }, 9.45);
+
+        window.__timelines["recruitpro-promo"] = tl;
+      </script>
+    </div>
+  </body>
+</html>

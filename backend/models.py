@@ -11,11 +11,13 @@ class PrepareInterviewPayload(BaseModel):
     positionId: str
     mode: str = "async_qa"
     questionCount: int | None = None
+    accessToken: str | None = None
 
 
 class StartInterviewPayload(BaseModel):
     interviewId: str
     sessionId: str
+    accessToken: str | None = None
 
 
 class AppendTurnPayload(BaseModel):
@@ -24,16 +26,19 @@ class AppendTurnPayload(BaseModel):
     content: str
     inputMode: str = "text"
     metadata: dict[str, Any] | None = None
+    accessToken: str | None = None
 
 
 class FinishInterviewPayload(BaseModel):
     interviewId: str
     sessionId: str
+    accessToken: str | None = None
 
 
 class ScoreInterviewPayload(BaseModel):
     interviewId: str
     sessionId: str
+    accessToken: str | None = None
 
 
 class ProctoringEventPayload(BaseModel):
@@ -51,6 +56,7 @@ class RecordProctoringEventsPayload(BaseModel):
     interviewId: str
     sessionId: str
     events: list[ProctoringEventPayload] = Field(default_factory=list)
+    accessToken: str | None = None
 
 
 class HumanConfirmPayload(BaseModel):

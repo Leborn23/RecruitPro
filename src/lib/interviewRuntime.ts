@@ -155,11 +155,13 @@ export interface PrepareInterviewPayload {
   positionId: string;
   mode?: InterviewSessionMode;
   questionCount?: number;
+  accessToken?: string;
 }
 
 export interface StartInterviewPayload {
   interviewId: string;
   sessionId: string;
+  accessToken?: string;
 }
 
 export interface AppendTurnPayload {
@@ -168,16 +170,19 @@ export interface AppendTurnPayload {
   content: string;
   inputMode?: InterviewTurnInputMode;
   metadata?: Record<string, unknown>;
+  accessToken?: string;
 }
 
 export interface FinishInterviewPayload {
   interviewId: string;
   sessionId: string;
+  accessToken?: string;
 }
 
 export interface ScoreInterviewPayload {
   interviewId: string;
   sessionId: string;
+  accessToken?: string;
 }
 
 export interface ProctoringEventInput {
@@ -195,6 +200,7 @@ export interface RecordProctoringEventsPayload {
   interviewId: string;
   sessionId: string;
   events: ProctoringEventInput[];
+  accessToken?: string;
 }
 
 export interface HumanConfirmPayload {
@@ -306,11 +312,14 @@ function resolveFastApiBaseUrls(baseUrl: string): string[] {
 }
 
 async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): Promise<TResponse> {
+  const roomAccessToken = typeof (payload as { accessToken?: unknown }).accessToken === 'string'
+    ? String((payload as { accessToken?: unknown }).accessToken).trim()
+    : '';
   const {
     data: { session }
   } = await supabase.auth.getSession();
 
-  if (!session?.access_token) {
+  if (!session?.access_token && !roomAccessToken) {
     throw new Error('登录状态已失效，请重新登录后再试');
   }
 
@@ -336,7 +345,7 @@ async function invokeEdgeFunction<TResponse>(fnName: string, payload: object): P
         response = await fetch(url, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.access_token}`,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
             'Content-Type': 'application/json'
           },
           body

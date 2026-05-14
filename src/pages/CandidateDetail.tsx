@@ -79,6 +79,33 @@ type EvidenceSpan = {
 type RiskFlag = { type?: string; severity?: string; message?: string };
 
 type ParserRawJson = { evidence_spans?: EvidenceSpan[] };
+type SkillEvidence = {
+  skill?: string;
+  confidence?: number;
+  evidence_span_ids?: string[];
+  inference_reason?: string;
+};
+type ResumeProfileRow = {
+  basic_profile?: {
+    full_name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    current_title?: string | null;
+    years_of_experience?: number | null;
+    education_level?: string | null;
+  };
+  explicit_skills?: SkillEvidence[];
+  inferred_skills?: SkillEvidence[];
+  work_experience?: Array<Record<string, unknown>>;
+  education?: Array<Record<string, unknown>>;
+  certifications?: Array<Record<string, unknown>>;
+  risk_flags?: RiskFlag[];
+  extraction_confidence?: {
+    overall?: number | null;
+    by_section?: Record<string, number | null | undefined>;
+  };
+  parser_raw_json?: ParserRawJson;
+};
 type CandidateDetailRouteState = { matchId?: string; positionId?: string } | null;
 
 const toPercent = (value: number | null | undefined): number => {
@@ -119,6 +146,7 @@ export default function CandidateDetail() {
 
   const [candidate, setCandidate] = useState<CandidateRow | null>(null);
   const [matchResult, setMatchResult] = useState<MatchRow | null>(null);
+  const [resumeProfile, setResumeProfile] = useState<ResumeProfileRow | null>(null);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [riskFlags, setRiskFlags] = useState<RiskFlag[]>([]);
   const [evidenceSpans, setEvidenceSpans] = useState<EvidenceSpan[]>([]);
@@ -145,6 +173,7 @@ export default function CandidateDetail() {
       if (!candidateData) {
         setCandidate(null);
         setMatchResult(null);
+        setResumeProfile(null);
         setProjects([]);
         setRiskFlags([]);
         setEvidenceSpans([]);
@@ -200,15 +229,23 @@ export default function CandidateDetail() {
             .select('id,project_name,project_summary,tech_stack,leadership_level,complexity_level')
             .eq('profile_id', latestMatch.profile_id)
             .order('project_index', { ascending: true }),
-          supabase.from('parsed_resume_profiles').select('risk_flags, parser_raw_json').eq('id', latestMatch.profile_id).single(),
+          supabase
+            .from('parsed_resume_profiles')
+            .select(
+              'basic_profile,explicit_skills,inferred_skills,work_experience,education,certifications,risk_flags,extraction_confidence,parser_raw_json'
+            )
+            .eq('id', latestMatch.profile_id)
+            .single(),
         ]);
 
+        setResumeProfile((profileRes.data as ResumeProfileRow | null) ?? null);
         setProjects((projectRes.data as ProjectRow[]) || []);
         setRiskFlags(Array.isArray(profileRes.data?.risk_flags) ? (profileRes.data.risk_flags as RiskFlag[]) : []);
 
         const parserRaw = profileRes.data?.parser_raw_json as ParserRawJson | undefined;
         setEvidenceSpans(Array.isArray(parserRaw?.evidence_spans) ? parserRaw.evidence_spans : []);
       } else {
+        setResumeProfile(null);
         setProjects([]);
         setRiskFlags([]);
         setEvidenceSpans([]);
@@ -301,12 +338,58 @@ export default function CandidateDetail() {
     return evidenceSpans.filter((item) => set.has(item.span_id)).slice(0, 5);
   }, [matchResult?.evidence_links, evidenceSpans]);
 
+  const evidenceById = useMemo(() => {
+    const map = new Map<string, EvidenceSpan>();
+    evidenceSpans.forEach((item) => map.set(item.span_id, item));
+    return map;
+  }, [evidenceSpans]);
+
+  const resolveEvidenceText = (ids: string[] | undefined): string => {
+    const first = safeArray(ids)
+      .map((spanId) => evidenceById.get(spanId)?.text_excerpt)
+      .find((text) => Boolean(cleanText(text)));
+    return cleanText(first);
+  };
+
   const overallScore = toPercent(matchResult?.overall_score ?? candidate?.match ?? 0);
   const confidenceScore = toPercent(matchResult?.confidence);
+  const profileConfidence = toPercent(resumeProfile?.extraction_confidence?.overall);
+
+  const basicProfile = resumeProfile?.basic_profile ?? {};
+  const explicitSkills = safeArray(resumeProfile?.explicit_skills)
+    .filter((item) => cleanText(item.skill))
+    .slice(0, 14);
+  const inferredSkills = safeArray(resumeProfile?.inferred_skills)
+    .filter((item) => cleanText(item.skill))
+    .slice(0, 8);
+  const profileEducation = safeArray(resumeProfile?.education).slice(0, 3);
+  const profileWorkExperience = safeArray(resumeProfile?.work_experience).slice(0, 3);
+  const profileCertifications = safeArray(resumeProfile?.certifications).slice(0, 4);
+
+  const profileFacts = [
+    { label: '联系电话', value: cleanText(basicProfile.phone) || '未识别' },
+    { label: '邮箱', value: cleanText(basicProfile.email) || '未识别' },
+    { label: '当前岗位', value: cleanText(basicProfile.current_title) || candidate?.title || '未识别' },
+    {
+      label: '经验年限',
+      value:
+        basicProfile.years_of_experience != null
+          ? `${basicProfile.years_of_experience} 年`
+          : candidate?.exp_years != null
+            ? `${candidate.exp_years} 年`
+            : '未识别',
+    },
+    { label: '学历', value: cleanText(basicProfile.education_level) || candidate?.edu_level || candidate?.edu || '未识别' },
+    { label: '解析置信度', value: `${profileConfidence}%` },
+  ];
 
   const allRiskItems = useMemo(() => {
     const merged = [
-      ...riskFlags.map((item) => ({ message: item.message || item.type || '风险提示', severity: item.severity })),
+      ...riskFlags.map((item) => ({
+        message: item.message || riskTypeLabel(item.type),
+        severity: item.severity,
+        type: item.type,
+      })),
       ...(matchResult?.concerns || []).map((message) => ({ message, severity: 'warning' })),
     ];
 
@@ -427,6 +510,76 @@ export default function CandidateDetail() {
         </div>
       </section>
 
+      <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-[#16355f]">档案概览</h3>
+            <p className="mt-1 text-xs text-[#6b86a4]">来自简历结构化解析，缺失项需要人工复核。</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {profileCertifications.map((item, index) => {
+              const name = cleanText(item.name) || cleanText(item.certification) || cleanText(item.title);
+              return name ? (
+                <span key={`${name}-${index}`} className="rounded-full border border-[#c7daf6] bg-[#f4f8ff] px-2.5 py-1 text-xs text-primary">
+                  {name}
+                </span>
+              ) : null;
+            })}
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          {profileFacts.map((item) => (
+            <div key={item.label} className="rounded-[18px] border border-[#d6e2f1] bg-[#f8fbff] p-3">
+              <p className="text-[11px] text-[#6b86a4]">{item.label}</p>
+              <p className="mt-1 min-h-5 truncate text-sm font-semibold text-[#16355f]" title={String(item.value)}>
+                {item.value}
+              </p>
+            </div>
+          ))}
+        </div>
+        {(profileWorkExperience.length > 0 || profileEducation.length > 0) && (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {profileWorkExperience.length > 0 && (
+              <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f8fbff] p-4">
+                <p className="mb-2 text-xs font-semibold text-[#426a9a]">近期经历</p>
+                <div className="space-y-2">
+                  {profileWorkExperience.map((item, index) => {
+                    const company = cleanText(item.company) || cleanText(item.company_name) || '未识别公司';
+                    const title = cleanText(item.title) || cleanText(item.role) || cleanText(item.position) || '未识别岗位';
+                    const period = cleanText(item.period) || cleanText(item.duration) || '';
+                    return (
+                      <div key={`${company}-${index}`} className="text-xs leading-relaxed text-[#24476b]">
+                        <span className="font-semibold text-[#16355f]">{company}</span>
+                        <span> · {title}</span>
+                        {period && <span className="text-[#6b86a4]"> · {period}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {profileEducation.length > 0 && (
+              <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f8fbff] p-4">
+                <p className="mb-2 text-xs font-semibold text-[#426a9a]">教育经历</p>
+                <div className="space-y-2">
+                  {profileEducation.map((item, index) => {
+                    const school = cleanText(item.school) || cleanText(item.university) || '未识别学校';
+                    const degree = cleanText(item.degree) || cleanText(item.level) || '';
+                    const major = cleanText(item.major) || '';
+                    return (
+                      <div key={`${school}-${index}`} className="text-xs leading-relaxed text-[#24476b]">
+                        <span className="font-semibold text-[#16355f]">{school}</span>
+                        {(degree || major) && <span> · {[degree, major].filter(Boolean).join(' / ')}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.75fr)_minmax(280px,1fr)]">
         <div className="space-y-5">
           <section className="rounded-[28px] border border-[#cddcf0] bg-white p-5 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
@@ -450,26 +603,48 @@ export default function CandidateDetail() {
                   </p>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3.5">
-                    <p className="mb-2 flex items-center gap-1 text-xs font-semibold text-primary">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      命中技能
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(matchResult.matched_skills || []).slice(0, 10).map((skill) => (
-                        <span key={skill} className="rounded-md border border-[#c7daf6] bg-white px-2 py-0.5 text-xs text-primary">
-                          {skill}
-                        </span>
-                      ))}
-                      {(matchResult.matched_skills || []).length === 0 && <span className="text-xs text-on-surface-variant">暂无命中技能</span>}
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.7fr)]">
+                  <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <p className="flex items-center gap-1 text-xs font-semibold text-primary">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        简历技能证据
+                      </p>
+                      <span className="text-[11px] text-[#6b86a4]">明确 {explicitSkills.length} / 推断 {inferredSkills.length}</span>
                     </div>
+                    {explicitSkills.length === 0 && inferredSkills.length === 0 ? (
+                      <p className="text-xs text-on-surface-variant">暂无可展示的技能证据。</p>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {explicitSkills.slice(0, 8).map((item, index) => {
+                          const evidenceText = resolveEvidenceText(item.evidence_span_ids);
+                          return (
+                            <div key={`${item.skill}-${index}`} className="rounded-xl border border-[#d6e2f1] bg-white px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-sm font-semibold text-[#16355f]">{item.skill}</span>
+                                <span className="text-[11px] text-[#6b86a4]">置信度 {formatPercent(item.confidence)}</span>
+                              </div>
+                              {evidenceText && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#5d7896]">{evidenceText}</p>}
+                            </div>
+                          );
+                        })}
+                        {inferredSkills.slice(0, 4).map((item, index) => (
+                          <div key={`${item.skill}-${index}`} className="rounded-xl border border-[#d6e2f1] bg-[#f8fbff] px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-sm font-semibold text-[#24476b]">{item.skill}</span>
+                              <span className="rounded-full border border-[#d6e2f1] bg-white px-2 py-0.5 text-[11px] text-[#6b86a4]">推断</span>
+                            </div>
+                            {item.inference_reason && <p className="mt-1 text-xs leading-relaxed text-[#5d7896]">{item.inference_reason}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  <div className="rounded-[20px] border border-[#f1d8de] bg-[#fff6f8] p-3.5">
-                    <p className="mb-2 flex items-center gap-1 text-xs font-semibold text-error">
+                  <div className="rounded-[20px] border border-[#f1d8de] bg-[#fff6f8] p-4">
+                    <p className="mb-3 flex items-center gap-1 text-xs font-semibold text-error">
                       <XCircle className="h-3.5 w-3.5" />
-                      缺失技能
+                      岗位缺口
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {(matchResult.missing_skills || []).slice(0, 10).map((skill) => (
@@ -479,6 +654,18 @@ export default function CandidateDetail() {
                       ))}
                       {(matchResult.missing_skills || []).length === 0 && <span className="text-xs text-on-surface-variant">无明显缺失技能</span>}
                     </div>
+                    {(matchResult.matched_skills || []).length > 0 && (
+                      <div className="mt-4 border-t border-error/10 pt-3">
+                        <p className="mb-2 text-xs font-semibold text-[#6b86a4]">岗位命中</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(matchResult.matched_skills || []).slice(0, 10).map((skill) => (
+                            <span key={skill} className="rounded-md border border-[#c7daf6] bg-white px-2 py-0.5 text-xs text-primary">
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -505,7 +692,12 @@ export default function CandidateDetail() {
                             <AlertTriangle className="mt-0.5 h-4 w-4 text-error" />
                           )}
                           <div>
-                            <p className="text-sm font-medium text-on-surface">{item.requirement}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-medium text-on-surface">{item.requirement}</p>
+                              <span className="rounded-full border border-current/15 px-2 py-0.5 text-[11px]">
+                                {requirementStatusLabel(item.status)}
+                              </span>
+                            </div>
                             <p className="text-xs text-on-surface-variant">{item.reason}</p>
                           </div>
                         </div>
@@ -722,3 +914,24 @@ export default function CandidateDetail() {
     </div>
   );
 }
+
+const cleanText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+const formatPercent = (value: number | null | undefined): string => `${toPercent(value)}%`;
+
+const safeArray = <T,>(value: T[] | null | undefined): T[] => (Array.isArray(value) ? value : []);
+
+const requirementStatusLabel = (status: 'met' | 'not_met' | 'unknown') => {
+  if (status === 'met') return '已满足';
+  if (status === 'not_met') return '缺口';
+  return '待确认';
+};
+
+const riskTypeLabel = (type: string | undefined) => {
+  const normalized = (type || '').toLowerCase();
+  if (normalized === 'llm_evidence_rejected') return '证据不足';
+  if (normalized === 'missing_contact') return '联系方式缺失';
+  if (normalized === 'low_quality_text') return '简历文本质量低';
+  if (normalized === 'missing_skills') return '技能信息不足';
+  return type || '风险提示';
+};

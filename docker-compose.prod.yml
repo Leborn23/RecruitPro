@@ -28,6 +28,8 @@ services:
       AGENT_BASE_URL: http://agent:8000
     volumes:
       - ./data:/app/data
+    ports:
+      - "127.0.0.1:8010:8010"
     depends_on:
       - agent
     restart: unless-stopped
@@ -37,12 +39,12 @@ services:
       context: .
       dockerfile: Dockerfile.frontend.prod
       args:
-        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?set VITE_SUPABASE_URL in .env.production and run docker-compose with --env-file .env.production}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:?set VITE_SUPABASE_ANON_KEY in .env.production and run docker-compose with --env-file .env.production}
         VITE_FASTAPI_BASE_URL: ${VITE_FASTAPI_BASE_URL:-/api-fast}
         VITE_SCREENING_USE_BACKEND: ${VITE_SCREENING_USE_BACKEND:-true}
     ports:
-      - "80:80"
+      - "3000:80"
     depends_on:
       - backend
     restart: unless-stopped

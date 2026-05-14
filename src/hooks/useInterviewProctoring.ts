@@ -18,6 +18,7 @@ export type UseInterviewProctoringParams = {
   interviewId: string;
   sessionId: string | null;
   enabled: boolean;
+  accessToken?: string;
 };
 
 export type UseInterviewProctoringResult = {
@@ -397,7 +398,7 @@ function getOffScreenAttentionMetadata(
 }
 
 export function useInterviewProctoring(params: UseInterviewProctoringParams): UseInterviewProctoringResult {
-  const { interviewId, sessionId, enabled } = params;
+  const { interviewId, sessionId, enabled, accessToken = '' } = params;
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectorRef = useRef<Detector | null>(null);
@@ -757,6 +758,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
             await interviewRuntimeEdge.recordProctoringEvents({
               interviewId: firstEvent.interview_id,
               sessionId: firstEvent.session_id,
+              accessToken,
               events: groupEvents.map((event) => ({
                 eventType: event.event_type,
                 severity: event.severity,

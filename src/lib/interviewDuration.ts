@@ -1,10 +1,10 @@
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from './interviewQuestionCount.ts';
 
 export const INTERVIEW_DURATION_OPTIONS = [
-  { value: 15, label: '3 题', description: '3 题默认 15 分钟，适合快速初筛。' },
-  { value: 20, label: '5 题', description: '5 题默认 20 分钟，适合标准首轮问答。' },
-  { value: 30, label: '8 题', description: '8 题默认 30 分钟，适合深入追问。' },
-  { value: 45, label: '10 题', description: '10 题默认 45 分钟，适合完整结构化面试。' },
+  { value: 15, label: '15 分钟', description: '适合 3 题快速初筛。' },
+  { value: 20, label: '20 分钟', description: '适合 5 题标准初面。' },
+  { value: 30, label: '30 分钟', description: '适合 8 题深入追问。' },
+  { value: 45, label: '45 分钟', description: '适合 10 题完整结构化面试。' },
 ] as const;
 
 export const DEFAULT_INTERVIEW_DURATION_MINUTES = 20;
@@ -23,7 +23,7 @@ export function getInterviewDurationOption(value: unknown) {
   const normalized = normalizeInterviewDuration(value);
   return (
     INTERVIEW_DURATION_OPTIONS.find((item) => item.value === normalized) ??
-    INTERVIEW_DURATION_OPTIONS[2]
+    INTERVIEW_DURATION_OPTIONS[1]
   );
 }
 

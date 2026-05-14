@@ -1,9 +1,8 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import type { ComponentType } from 'react';
-import { Circle, Shield, SlidersHorizontal, Users2 } from 'lucide-react';
+import { MessageSquareText, SlidersHorizontal } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../context/AuthContext';
 import type { SettingsCenterContextValue } from './settings/context';
 
 type SettingsNavItem = {
@@ -11,17 +10,14 @@ type SettingsNavItem = {
   label: string;
   path: string;
   icon: ComponentType<{ className?: string }>;
-  superAdminOnly?: boolean;
 };
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
-  { key: 'organization', label: '组织规则', path: '/settings/organization', icon: Shield },
-  { key: 'ai-policy', label: 'AI 与筛选策略', path: '/settings/ai-policy', icon: SlidersHorizontal },
-  { key: 'access', label: '权限与成员', path: '/settings/access', icon: Users2, superAdminOnly: true },
+  { key: 'ai-policy', label: 'AI 配置', path: '/settings/ai-policy', icon: SlidersHorizontal },
+  { key: 'interview', label: '面试配置', path: '/settings/interview', icon: MessageSquareText },
 ];
 
 export default function SettingsCenter() {
-  const { isSuperAdmin } = useAuth();
   const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -91,21 +87,7 @@ export default function SettingsCenter() {
             </div>
             <div>
               <h2 className="text-[28px] font-semibold leading-none tracking-tight text-[#16355f]">系统设置</h2>
-              <p className="mt-2 text-sm text-[#6b86a4]">管理组织规则、AI 策略、权限治理和环境级操作。</p>
-            </div>
-          </div>
-
-          <div className="inline-flex items-center gap-3 self-start rounded-2xl border border-[#d9e5f2] bg-[#fbfdff] px-4 py-3 lg:self-auto">
-            <Circle
-              className={`h-2.5 w-2.5 fill-current ${
-                syncError ? 'text-rose-500' : loading ? 'text-slate-400' : 'text-[#1f5fbf]'
-              }`}
-            />
-            <div>
-              <p className="text-[11px] font-semibold tracking-[0.18em] text-[#8aa0ba]">云端同步状态</p>
-              <p className={`mt-1 text-sm font-medium ${syncError ? 'text-rose-500' : 'text-[#16355f]'}`}>
-                {syncError ? '同步异常' : loading ? '同步中' : '实时生效'}
-              </p>
+              <p className="mt-2 text-sm text-[#6b86a4]">配置 AI 模型和线上面试的默认规则。</p>
             </div>
           </div>
         </div>
@@ -113,7 +95,7 @@ export default function SettingsCenter() {
 
       <section className="overflow-hidden rounded-[28px] border border-[#d9e5f2] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
         <nav className="hide-scrollbar flex gap-2 overflow-x-auto border-b border-[#e8eff7] px-4 py-3">
-          {SETTINGS_NAV_ITEMS.filter((item) => !item.superAdminOnly || isSuperAdmin).map((item) => (
+          {SETTINGS_NAV_ITEMS.map((item) => (
             <NavLink
               key={item.key}
               to={item.path}

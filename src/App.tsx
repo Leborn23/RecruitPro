@@ -17,6 +17,7 @@ import AdminManagement from './pages/AdminManagement';
 import InterviewRoom from './pages/InterviewRoom';
 import OrganizationSettings from './pages/settings/OrganizationSettings';
 import AiPolicySettings from './pages/settings/AiPolicySettings';
+import InterviewSettings from './pages/settings/InterviewSettings';
 
 function App() {
   return (
@@ -27,11 +28,7 @@ function App() {
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route
             path="/interview-room/:interviewId"
-            element={
-              <ProtectedRoute>
-                <InterviewRoom />
-              </ProtectedRoute>
-            }
+            element={<InterviewRoom />}
           />
           <Route path="/" element={<AppLayout />}>
             <Route
@@ -99,9 +96,10 @@ function App() {
                 </ProtectedRoute>
               }
             >
-              <Route index element={<Navigate to="organization" replace />} />
+              <Route index element={<Navigate to="ai-policy" replace />} />
               <Route path="organization" element={<OrganizationSettings />} />
               <Route path="ai-policy" element={<AiPolicySettings />} />
+              <Route path="interview" element={<InterviewSettings />} />
               <Route
                 path="access"
                 element={
@@ -110,8 +108,8 @@ function App() {
                   </ProtectedRoute>
                 }
               />
-              <Route path="billing" element={<Navigate to="/settings/organization" replace />} />
-              <Route path="danger" element={<Navigate to="/settings/organization" replace />} />
+              <Route path="billing" element={<Navigate to="/settings/ai-policy" replace />} />
+              <Route path="danger" element={<Navigate to="/settings/ai-policy" replace />} />
             </Route>
             <Route
               path="profile"

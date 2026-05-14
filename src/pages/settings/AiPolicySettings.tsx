@@ -1,18 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Sliders, Trash2, Wifi } from 'lucide-react';
+import { ListChecks, Loader2, Sliders, Trash2, Wifi } from 'lucide-react';
 import { useSettingsCenterContext } from './context';
 import { supabase } from '../../lib/supabase';
-import {
-  getInterviewQuestionCountOption,
-  INTERVIEW_QUESTION_COUNT_OPTIONS,
-  normalizeInterviewQuestionCount,
-} from '../../lib/interviewQuestionCount';
-import {
-  getInterviewDurationMinutesForQuestionCount,
-  INTERVIEW_DURATION_OPTIONS,
-  normalizeInterviewDuration,
-} from '../../lib/interviewDuration';
 import { testLlmConnection, type LlmConnectionConfig } from '../../lib/llmConnectionTest';
+import { fetchOpenAiCompatibleModels } from '../../lib/llmModelDiscovery';
 
 type LlmMode = 'local' | 'api_key';
 type LlmProvider =
@@ -26,7 +17,6 @@ type LlmProvider =
   | 'vllm'
   | 'zhipu'
   | 'moonshot';
-type LlmStrategyMode = 'quality' | 'balanced' | 'cost';
 
 interface LlmModelConfigRow {
   id: string;
@@ -57,6 +47,12 @@ type TestState =
   | { status: 'success'; message: string }
   | { status: 'error'; message: string };
 
+type ModelDiscoveryState =
+  | { status: 'idle'; message: '' }
+  | { status: 'running'; message: string }
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string };
+
 const PROVIDER_OPTIONS: Array<{ value: LlmProvider; label: string }> = [
   { value: 'custom', label: '自定义（OpenAI 兼容）' },
   { value: 'openai', label: 'OpenAI' },
@@ -68,12 +64,6 @@ const PROVIDER_OPTIONS: Array<{ value: LlmProvider; label: string }> = [
   { value: 'vllm', label: 'vLLM（本地）' },
   { value: 'zhipu', label: '智谱 AI' },
   { value: 'moonshot', label: 'Moonshot / Kimi' },
-];
-
-const STRATEGY_OPTIONS: Array<{ value: LlmStrategyMode; label: string; description: string }> = [
-  { value: 'quality', label: '质量优先', description: '优先保证稳定性和准确性，必要时自动重试一次。' },
-  { value: 'balanced', label: '平衡模式', description: '在效果、响应速度和成本之间保持平衡。' },
-  { value: 'cost', label: '成本优先', description: '尽量减少重试，更强调调用成本控制。' },
 ];
 
 function inferProtocol(provider: LlmProvider, baseUrl: string | null): 'openai' | 'anthropic' | 'gemini' {
@@ -90,11 +80,6 @@ function normalizeModelMode(value: unknown): LlmMode {
   return value === 'local' ? 'local' : 'api_key';
 }
 
-function normalizeStrategyMode(value: unknown): LlmStrategyMode {
-  if (value === 'quality' || value === 'balanced' || value === 'cost') return value;
-  return 'balanced';
-}
-
 function makeInitialForm(): NewModelForm {
   return {
     mode: 'api_key',
@@ -108,7 +93,7 @@ function makeInitialForm(): NewModelForm {
 const cardShadow = 'shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]';
 
 export default function AiPolicySettings() {
-  const { settings, loading, syncError, updateSetting, updateSettings } = useSettingsCenterContext();
+  const { settings, loading, syncError, updateSetting } = useSettingsCenterContext();
   const [models, setModels] = useState<LlmModelConfigRow[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -116,6 +101,8 @@ export default function AiPolicySettings() {
   const [isSavingModel, setIsSavingModel] = useState(false);
   const [newModel, setNewModel] = useState<NewModelForm>(makeInitialForm());
   const [testState, setTestState] = useState<TestState>({ status: 'idle', message: '' });
+  const [modelDiscoveryState, setModelDiscoveryState] = useState<ModelDiscoveryState>({ status: 'idle', message: '' });
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
 
   const activeModelId = (settings?.active_llm_model_id as string | null) ?? null;
   const interviewAgentModelId = (settings?.active_interview_llm_model_id as string | null) ?? activeModelId ?? null;
@@ -124,13 +111,6 @@ export default function AiPolicySettings() {
     () => models.find((item) => item.id === interviewAgentModelId) ?? null,
     [models, interviewAgentModelId]
   );
-  const retryEnabled = Boolean(settings?.llm_retry_enabled ?? true);
-  const strategyMode = normalizeStrategyMode(settings?.llm_strategy_mode);
-  const interviewQuestionCount = normalizeInterviewQuestionCount(settings?.interview_question_count);
-  const interviewQuestionCountOption = getInterviewQuestionCountOption(interviewQuestionCount);
-  const interviewDuration = getInterviewDurationMinutesForQuestionCount(interviewQuestionCount);
-  const interviewDurationOption = { value: interviewDuration, label: '按题量自动匹配' } as const;
-
   const loadModels = async () => {
     setModelsLoading(true);
     setModelsError(null);
@@ -158,7 +138,7 @@ export default function AiPolicySettings() {
   }, [loading]);
 
   if (loading) {
-    return <div className="p-12 text-center text-slate-500 animate-pulse">正在加载 AI 策略设置...</div>;
+    return <div className="p-12 text-center text-slate-500 animate-pulse">正在加载 AI 配置...</div>;
   }
 
   const handleSelectActiveModel = async (modelId: string) => {
@@ -243,6 +223,54 @@ export default function AiPolicySettings() {
     await loadModels();
   };
 
+  const handleDiscoverModels = async () => {
+    setModelsError(null);
+    setSaveMessage(null);
+    setDiscoveredModels([]);
+
+    const baseUrl = newModel.base_url.trim();
+    if (!baseUrl) {
+      setModelDiscoveryState({ status: 'error', message: '请先填写 Base URL。' });
+      return;
+    }
+
+    if (newModel.provider === 'anthropic' || newModel.provider === 'google') {
+      setModelDiscoveryState({
+        status: 'error',
+        message: '当前自动检测优先支持 OpenAI 兼容接口；Anthropic / Gemini 请先手动填写模型名称。',
+      });
+      return;
+    }
+
+    if (newModel.mode === 'api_key' && !newModel.api_key_encrypted.trim()) {
+      setModelDiscoveryState({ status: 'error', message: '云端模型需要先填写 API Key。' });
+      return;
+    }
+
+    try {
+      setModelDiscoveryState({ status: 'running', message: '正在检测模型列表...' });
+      const result = await fetchOpenAiCompatibleModels({
+        baseUrl,
+        apiKey: newModel.mode === 'api_key' ? newModel.api_key_encrypted.trim() : null,
+        timeoutMs: 15000,
+      });
+      setDiscoveredModels(result.models);
+      setNewModel((prev) => ({
+        ...prev,
+        model_name: prev.model_name.trim() || result.models[0] || '',
+      }));
+      setModelDiscoveryState({
+        status: 'success',
+        message: `已从 ${result.endpoint} 获取 ${result.models.length} 个模型。`,
+      });
+    } catch (error) {
+      setModelDiscoveryState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '模型列表检测失败，请手动填写模型名称。',
+      });
+    }
+  };
+
   const handleTestConnection = async () => {
     if (!activeModel) {
       setTestState({ status: 'error', message: '请先添加模型并选择一个生效模型。' });
@@ -280,28 +308,14 @@ export default function AiPolicySettings() {
     }
   };
 
-  const handleSaveSimpleStrategy = async (
-    patch: Partial<{
-      llm_retry_enabled: boolean;
-      llm_strategy_mode: LlmStrategyMode;
-      interview_question_count: number;
-      interview_duration_minutes: number;
-    }>
-  ) => {
-    setSaveMessage(null);
-    setModelsError(null);
-    await updateSettings(patch);
-    setSaveMessage('AI 策略已保存。');
-  };
-
   return (
     <section className="space-y-6 rounded-[28px] border border-[#d9e5f2] bg-white p-6 shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
       <div className="space-y-1 border-b border-[#e8eff7] pb-5">
         <h3 className="flex items-center gap-2 text-base font-semibold text-[#16355f]">
           <Sliders className="h-5 w-5 text-[#1f5fbf]" />
-          AI 与筛选策略
+          AI 配置
         </h3>
-        <p className="text-sm text-[#6b86a4]">统一管理模型接入、面试题生成和自动重试策略。</p>
+        <p className="text-sm text-[#6b86a4]">配置简历分析、匹配度计算、AI 面试和评分报告使用的模型。</p>
       </div>
 
       {syncError ? (
@@ -322,7 +336,7 @@ export default function AiPolicySettings() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 lg:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2">
         <article className={`rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-4 ${cardShadow}`}>
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">当前主模型</p>
           <p className="mt-2 text-lg font-semibold text-[#16355f]">{activeModel?.model_name || '未设置'}</p>
@@ -331,21 +345,9 @@ export default function AiPolicySettings() {
           </p>
         </article>
         <article className={`rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-4 ${cardShadow}`}>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">自动重试</p>
-          <p className="mt-2 text-lg font-semibold text-[#16355f]">{retryEnabled ? '已开启' : '已关闭'}</p>
-          <p className="mt-1 text-xs text-[#6b86a4]">
-            {STRATEGY_OPTIONS.find((item) => item.value === strategyMode)?.label || '平衡模式'}
-          </p>
-        </article>
-        <article className={`rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-4 ${cardShadow}`}>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">面试题数量</p>
-          <p className="mt-2 text-lg font-semibold text-[#16355f]">{interviewQuestionCountOption.value} 题</p>
-          <p className="mt-1 text-xs text-[#6b86a4]">{interviewQuestionCountOption.label}</p>
-        </article>
-        <article className={`rounded-[20px] border border-[#d9e5f2] bg-[#fbfdff] p-4 ${cardShadow}`}>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">默认面试时长</p>
-          <p className="mt-2 text-lg font-semibold text-[#16355f]">{interviewDurationOption.value} 分钟</p>
-          <p className="mt-1 text-xs text-[#6b86a4]">{interviewDurationOption.label}</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#6b86a4]">面试模型</p>
+          <p className="mt-2 text-lg font-semibold text-[#16355f]">{interviewAgentModel?.model_name || activeModel?.model_name || '未设置'}</p>
+          <p className="mt-1 text-xs text-[#6b86a4]">未单独设置时跟随主模型</p>
         </article>
       </div>
 
@@ -431,88 +433,6 @@ export default function AiPolicySettings() {
             </div>
           </section>
 
-          <section className={`rounded-[24px] border border-[#d9e5f2] bg-[#fbfdff] p-5 ${cardShadow}`}>
-            <div className="space-y-5">
-              <div>
-                <h4 className="text-sm font-semibold text-[#16355f]">自动策略</h4>
-                <p className="mt-1 text-xs text-[#6b86a4]">控制筛选链路的稳定性和面试题默认强度。</p>
-              </div>
-
-              <label className="inline-flex items-center gap-3 text-sm text-[#24476b]">
-                <input
-                  type="checkbox"
-                  checked={retryEnabled}
-                  onChange={(event) => void handleSaveSimpleStrategy({ llm_retry_enabled: event.target.checked })}
-                  className="h-4 w-4 cursor-pointer accent-[#1f5fbf]"
-                />
-                自动重试一次
-              </label>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-[#24476b]">策略模式</label>
-                <select
-                  value={strategyMode}
-                  onChange={(event) =>
-                    void handleSaveSimpleStrategy({ llm_strategy_mode: normalizeStrategyMode(event.target.value) })
-                  }
-                  className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
-                >
-                  {STRATEGY_OPTIONS.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-[#6b86a4]">
-                  {STRATEGY_OPTIONS.find((item) => item.value === strategyMode)?.description || '在效果、速度和成本之间保持平衡。'}
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-[#24476b]">默认题目数量</label>
-                <select
-                  value={String(interviewQuestionCount)}
-                  onChange={(event) =>
-                    void handleSaveSimpleStrategy({
-                      interview_question_count: normalizeInterviewQuestionCount(event.target.value),
-                    })
-                  }
-                  className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
-                >
-                  {INTERVIEW_QUESTION_COUNT_OPTIONS.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label} · {item.value} 题
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-[#6b86a4]">
-                  当前为 {interviewQuestionCountOption.label} 档，默认生成 {interviewQuestionCountOption.value} 道题。
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-[#24476b]">默认面试时长</label>
-                <select
-                  value={String(interviewDuration)}
-                  onChange={(event) =>
-                    void handleSaveSimpleStrategy({
-                      interview_duration_minutes: normalizeInterviewDuration(event.target.value),
-                    })
-                  }
-                  className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
-                >
-                  {INTERVIEW_DURATION_OPTIONS.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label} · {item.value} 分钟
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-[#6b86a4]">
-                  当前按题量自动匹配为 {interviewDurationOption.value} 分钟。
-                </p>
-              </div>
-            </div>
-          </section>
         </div>
 
         <div className="space-y-6">
@@ -527,13 +447,15 @@ export default function AiPolicySettings() {
                 <label className="block text-sm font-medium text-[#24476b]">运行模式</label>
                 <select
                   value={newModel.mode}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    setDiscoveredModels([]);
+                    setModelDiscoveryState({ status: 'idle', message: '' });
                     setNewModel((prev) => ({
                       ...prev,
                       mode: normalizeModelMode(event.target.value),
                       api_key_encrypted: normalizeModelMode(event.target.value) === 'local' ? '' : prev.api_key_encrypted,
-                    }))
-                  }
+                    }));
+                  }}
                   className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
                 >
                   <option value="local">本地模型</option>
@@ -545,7 +467,11 @@ export default function AiPolicySettings() {
                 <label className="block text-sm font-medium text-[#24476b]">模型提供方</label>
                 <select
                   value={newModel.provider}
-                  onChange={(event) => setNewModel((prev) => ({ ...prev, provider: event.target.value as LlmProvider }))}
+                  onChange={(event) => {
+                    setDiscoveredModels([]);
+                    setModelDiscoveryState({ status: 'idle', message: '' });
+                    setNewModel((prev) => ({ ...prev, provider: event.target.value as LlmProvider }));
+                  }}
                   className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
                 >
                   {PROVIDER_OPTIONS.map((item) => (
@@ -560,11 +486,19 @@ export default function AiPolicySettings() {
                 <label className="block text-sm font-medium text-[#24476b]">模型名称</label>
                 <input
                   type="text"
+                  list="llm-discovered-models"
                   value={newModel.model_name}
                   onChange={(event) => setNewModel((prev) => ({ ...prev, model_name: event.target.value }))}
                   placeholder="例如：gpt-4.1-mini / kimi-k2 / deepseek-chat"
                   className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
                 />
+                {discoveredModels.length > 0 ? (
+                  <datalist id="llm-discovered-models">
+                    {discoveredModels.map((modelName) => (
+                      <option key={modelName} value={modelName} />
+                    ))}
+                  </datalist>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -572,7 +506,11 @@ export default function AiPolicySettings() {
                 <input
                   type="text"
                   value={newModel.base_url}
-                  onChange={(event) => setNewModel((prev) => ({ ...prev, base_url: event.target.value }))}
+                  onChange={(event) => {
+                    setDiscoveredModels([]);
+                    setModelDiscoveryState({ status: 'idle', message: '' });
+                    setNewModel((prev) => ({ ...prev, base_url: event.target.value }));
+                  }}
                   placeholder="例如：http://127.0.0.1:11434/v1 或 https://api.openai.com/v1"
                   className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
                 />
@@ -584,12 +522,68 @@ export default function AiPolicySettings() {
                   <input
                     type="password"
                     value={newModel.api_key_encrypted}
-                    onChange={(event) => setNewModel((prev) => ({ ...prev, api_key_encrypted: event.target.value }))}
+                    onChange={(event) => {
+                      setDiscoveredModels([]);
+                      setModelDiscoveryState({ status: 'idle', message: '' });
+                      setNewModel((prev) => ({ ...prev, api_key_encrypted: event.target.value }));
+                    }}
                     placeholder="输入对应提供方的 API Key"
                     className="w-full rounded-2xl border border-[#d7e5f7] bg-white px-4 py-3 text-sm text-[#16355f] outline-none transition focus:border-[#6a9be0]"
                   />
                 </div>
               ) : null}
+
+              <div className="rounded-[20px] border border-[#d7e5f7] bg-white p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-[#16355f]">自动检测模型</p>
+                    <p className="mt-1 text-xs text-[#6b86a4]">调用 OpenAI 兼容的 /models 接口，检测失败时仍可手动填写。</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleDiscoverModels()}
+                    disabled={modelDiscoveryState.status === 'running'}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[#bfd5f5] bg-[#f7fbff] px-4 py-2.5 text-sm font-medium text-[#1f5fbf] transition hover:bg-[#edf4fd] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {modelDiscoveryState.status === 'running' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
+                    {modelDiscoveryState.status === 'running' ? '检测中...' : '检测模型'}
+                  </button>
+                </div>
+
+                {modelDiscoveryState.status !== 'idle' ? (
+                  <div
+                    className={`mt-3 rounded-2xl border px-3 py-2 text-xs ${
+                      modelDiscoveryState.status === 'success'
+                        ? 'border-[#bfd5f5] bg-[#f7fbff] text-[#1f5fbf]'
+                        : modelDiscoveryState.status === 'error'
+                          ? 'border-rose-200 bg-rose-50 text-rose-600'
+                          : 'border-[#d9e5f2] bg-[#fbfdff] text-[#6b86a4]'
+                    }`}
+                  >
+                    {modelDiscoveryState.message}
+                  </div>
+                ) : null}
+
+                {discoveredModels.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {discoveredModels.slice(0, 8).map((modelName) => (
+                      <button
+                        key={modelName}
+                        type="button"
+                        onClick={() => setNewModel((prev) => ({ ...prev, model_name: modelName }))}
+                        className="rounded-full border border-[#d7e5f7] bg-[#fbfdff] px-2.5 py-1 text-xs text-[#24476b] transition hover:border-[#6a9be0] hover:text-[#1f5fbf]"
+                      >
+                        {modelName}
+                      </button>
+                    ))}
+                    {discoveredModels.length > 8 ? (
+                      <span className="rounded-full border border-[#d7e5f7] bg-[#fbfdff] px-2.5 py-1 text-xs text-[#6b86a4]">
+                        +{discoveredModels.length - 8}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
 
               <button
                 type="button"

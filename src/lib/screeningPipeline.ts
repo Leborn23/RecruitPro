@@ -466,20 +466,61 @@ async function readScreeningBackendError(response: Response): Promise<string> {
   }
 }
 
-function parseBackendPhase1Result(raw: unknown): Phase1PipelineResult {
-  const obj = toObject(raw);
-  if (!obj) throw new Error('后端识别响应格式不正确');
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
-  const candidateId = cleanText(obj.candidateId);
-  const resumeUploadId = cleanText(obj.resumeUploadId);
-  const profileId = cleanText(obj.profileId);
-  const matchId = cleanText(obj.matchId);
-  const overallScore = toFiniteNumber(obj.overallScore, Number.NaN);
-  const recommendation = cleanText(obj.recommendation) as Recommendation | null;
+async function readCompletedBackendResult(resumeUploadId: string, positionId: string): Promise<Phase1PipelineResult | null> {
+  const { data: upload, error: uploadError } = await supabase
+    .from('resume_uploads')
+    .select('id,status,pipeline_stage,error_code,error_message,candidate_id,parsed_payload')
+    .eq('id', resumeUploadId)
+    .single();
 
-  if (!candidateId || !resumeUploadId || !profileId || !matchId || !Number.isFinite(overallScore) || !recommendation) {
-    throw new Error('后端识别响应缺少必要字段');
+  if (uploadError) {
+    throw new Error(`读取任务状态失败: ${uploadError.message}`);
   }
+
+  const status = cleanText(upload?.status);
+  const stage = cleanText(upload?.pipeline_stage);
+  if (status === 'failed' || stage === 'failed') {
+    const message = cleanText(upload?.error_message) ?? cleanText(upload?.error_code) ?? '识别失败';
+    throw new Error(message);
+  }
+  if (status !== 'completed') return null;
+
+  const candidateId = cleanText(upload?.candidate_id);
+  if (!candidateId) return null;
+
+  const { data: matchRows, error: matchError } = await supabase
+    .from('candidate_position_matches')
+    .select('id,overall_score,recommendation')
+    .eq('resume_upload_id', resumeUploadId)
+    .eq('position_id', positionId)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (matchError) {
+    throw new Error(`读取匹配结果失败: ${matchError.message}`);
+  }
+
+  const match = matchRows?.[0] as Record<string, unknown> | undefined;
+  const matchId = cleanText(match?.id);
+  const overallScore = toFiniteNumber(match?.overall_score ?? toObject(upload?.parsed_payload)?.overall_score, Number.NaN);
+  const recommendation = cleanText(match?.recommendation ?? toObject(upload?.parsed_payload)?.recommendation) as Recommendation | null;
+  if (!matchId || !Number.isFinite(overallScore) || !recommendation) return null;
+
+  const { data: profileRows, error: profileError } = await supabase
+    .from('parsed_resume_profiles')
+    .select('id')
+    .eq('resume_upload_id', resumeUploadId)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (profileError) {
+    throw new Error(`读取画像结果失败: ${profileError.message}`);
+  }
+
+  const profileId = cleanText((profileRows?.[0] as Record<string, unknown> | undefined)?.id);
+  if (!profileId) return null;
 
   return {
     candidateId,
@@ -510,17 +551,11 @@ async function runPhase1ResumePipelineOnBackend(
   formData.append('file', file, file.name);
 
   const controller = new AbortController();
-  const cancelTimer = options?.shouldCancel
-    ? window.setInterval(() => {
-        if (options.shouldCancel?.()) controller.abort();
-      }, 250)
-    : null;
 
-  onStageChange?.('uploaded', '文件已提交后端，准备解析文本');
-  onStageChange?.('text_extraction', '后端正在解析简历文本');
+  onStageChange?.('uploaded', '文件已提交后端，正在创建后台任务');
 
   try {
-    const response = await fetch(`${screeningBackendBaseUrl()}/api/screening/phase1`, {
+    const response = await fetch(`${screeningBackendBaseUrl()}/api/screening/phase1/async`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${session.access_token}`
@@ -533,17 +568,46 @@ async function runPhase1ResumePipelineOnBackend(
       throw new Error(await readScreeningBackendError(response));
     }
 
-    onStageChange?.('matching', '后端正在生成候选人画像与匹配结果');
-    const result = parseBackendPhase1Result(await response.json());
-    onStageChange?.('completed', '匹配分析已完成');
-    return result;
+    const submitted = toObject(await response.json());
+    const resumeUploadId = cleanText(submitted?.resumeUploadId);
+    if (!resumeUploadId) {
+      throw new Error('后端任务响应缺少任务 ID');
+    }
+
+    onStageChange?.('text_extraction', '后台任务已创建，正在解析和分析');
+    const startedAt = Date.now();
+    let cancelRequested = false;
+    while (Date.now() - startedAt < 20 * 60 * 1000) {
+      if (options?.shouldCancel?.()) {
+        if (!cancelRequested) {
+          cancelRequested = true;
+          await fetch(`${screeningBackendBaseUrl()}/api/uploads/${resumeUploadId}/cancel`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ message: '已取消识别', error_code: 'USER_CANCELLED' })
+          }).catch(() => undefined);
+        }
+        throw new PipelineCancelledError('已取消识别');
+      }
+
+      const result = await readCompletedBackendResult(resumeUploadId, position.id);
+      if (result) {
+        onStageChange?.('completed', '匹配分析已完成');
+        return result;
+      }
+      onStageChange?.('matching', '后台 AI 分析中，可继续等待任务完成');
+      await sleep(2000);
+    }
+
+    throw new Error('后台识别超时，请稍后刷新任务列表查看结果');
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new PipelineCancelledError('已取消识别');
     }
     throw error;
-  } finally {
-    if (cancelTimer != null) window.clearInterval(cancelTimer);
   }
 }
 

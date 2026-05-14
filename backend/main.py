@@ -6,12 +6,13 @@ import json
 import os
 import secrets
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import Client, ClientOptions, create_client
 
@@ -230,10 +231,36 @@ def education_rank(level: str | None) -> int:
     return 0
 
 
+def recommendation_to_tag(recommendation: str) -> str:
+    if recommendation == "strong_match":
+        return "强烈推荐"
+    if recommendation == "partial_match":
+        return "建议面试"
+    if recommendation == "weak_match":
+        return "建议复核"
+    return "暂不推荐"
+
+
+def education_rank(level: str | None) -> int:
+    text = normalize_text(level)
+    if "博士" in text:
+        return 4
+    if "硕士" in text:
+        return 3
+    if "本科" in text:
+        return 2
+    if "大专" in text or "专科" in text:
+        return 1
+    return 0
+
+
 KNOWN_SKILLS = [
     "Python", "Java", "Golang", "Go", "TypeScript", "JavaScript", "Node.js", "React", "Vue",
     "Docker", "Kubernetes", "Kafka", "Redis", "MySQL", "PostgreSQL", "Linux", "AWS",
-    "微服务", "分布式", "高并发", "OCR", "LLM", "机器学习", "深度学习", "计算机视觉",
+    "PyTorch", "TensorFlow", "Scikit-learn", "Pandas", "Numpy", "YOLOX", "YOLO", "Unet",
+    "SKA-Unet", "CNN", "3D-CNN", "Transformer", "CBAM", "OCR", "LLM",
+    "机器学习", "深度学习", "自然语言处理", "计算机视觉", "推荐系统", "图像分割", "图像分类", "图像检测",
+    "多模态", "注意力机制", "医学图像", "模型部署", "A/B测试", "分布式训练",
 ]
 
 
@@ -242,13 +269,14 @@ def contains_cjk(text: str | None) -> bool:
 
 
 def detect_skills(text: str) -> list[str]:
-    lower = text.lower()
+    lower = normalize_text(text).lower()
     found = [normalize_skill(skill) for skill in KNOWN_SKILLS if skill.lower() in lower]
     return dedupe_keep_order(found)
 
 
 def split_sentences(text: str) -> list[str]:
-    return [item.strip() for item in re.split(r"[\n。！？!?;.]+", text) if len(item.strip()) >= 8]
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    return [item.strip() for item in re.split(r"[\n。！？；;]+", normalized) if len(item.strip()) >= 8]
 
 
 def build_evidence_spans(text: str) -> list[dict[str, Any]]:
@@ -259,67 +287,94 @@ def build_evidence_spans(text: str) -> list[dict[str, Any]]:
         start = max(text.find(sentence, cursor), 0)
         end = start + len(sentence)
         cursor = end
-        output.append(
-            {
-                "span_id": f"sp_{index}",
-                "page_no": None,
-                "char_start": start,
-                "char_end": end,
-                "text_excerpt": sentence[:260],
-            }
-        )
+        output.append({"span_id": f"sp_{index}", "page_no": None, "char_start": start, "char_end": end, "text_excerpt": sentence[:260]})
     return output
 
 
 def parse_basic_profile(text: str, file_name: str) -> dict[str, Any]:
-    name = re.sub(r"\.(pdf|doc|docx)$", "", file_name, flags=re.IGNORECASE)
-    years_match = re.search(r"(\d{1,2})\s*年", text)
-    title = None
-    for keyword in ["工程师", "开发", "算法", "产品", "测试", "架构师", "运营"]:
-        if keyword in text:
-            idx = text.find(keyword)
-            snippet = text[max(0, idx - 8): idx + len(keyword) + 8].strip("：:，, ")
-            if len(snippet) >= len(keyword):
-                title = snippet
-                break
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", normalized)
+    phone_match = re.search(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)", normalized)
+    years_match = re.search(r"(\d{1,2})\s*(?:年|years?)\s*(?:工作|经验|experience)", normalized, flags=re.IGNORECASE)
+    title_match = re.search(r"(计算机视觉应用工程师/算法工程师|计算机视觉工程师|算法工程师|机器学习工程师|深度学习工程师|后端工程师|前端工程师|架构师|技术负责人|研发经理|工程师)", normalized, flags=re.IGNORECASE)
+    sentences = split_sentences(normalized)
+    first_sentence = sentences[0] if sentences else normalized[:120]
+    name_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=\s|计算机|算法|工程师|性别|电话|邮箱|Email|E-mail|\d)", first_sentence)
+    file_name_base = re.sub(r"\.(pdf|doc|docx)$", "", file_name, flags=re.IGNORECASE)
+    file_name_base = re.sub(r"[-_\s]*(简历|resume)$", "", file_name_base, flags=re.IGNORECASE).strip()
     return {
-        "full_name": name or None,
-        "email": None,
-        "phone": None,
-        "current_title": title,
+        "full_name": name_match.group(1) if name_match else (file_name_base or None),
+        "email": email_match.group(0) if email_match else None,
+        "phone": phone_match.group(0).replace(" ", "").replace("-", "") if phone_match else None,
+        "current_title": title_match.group(1) if title_match else None,
         "years_of_experience": int(years_match.group(1)) if years_match else None,
     }
 
 
 def parse_education(text: str) -> list[dict[str, Any]]:
-    for level in ["博士", "硕士", "本科", "大专", "专科"]:
-        if level in text:
-            return [{"degree": level}]
-    return []
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    degree_match = re.search(r"博士|硕士|本科|大专|专科", normalized)
+    if not degree_match:
+        return []
+    institution_match = re.search(r"([\u4e00-\u9fa5A-Za-z]+(?:大学|学院))", normalized)
+    major_match = re.search(r"(计算机科学与技术|软件工程|人工智能|数学|统计学|电子信息|自动化|计算机)", normalized)
+    row: dict[str, Any] = {"degree": degree_match.group(0)}
+    if institution_match:
+        row["institution"] = institution_match.group(1)
+    if major_match:
+        row["major"] = major_match.group(1)
+    return [row]
+
+
+def clean_project_name(value: str) -> str:
+    name = re.sub(r"\s+", " ", normalize_text(value)).strip(" ：:-")
+    name = re.split(r"项目描述|项目介绍|技术实现|职责|责任|成果|：|:", name, maxsplit=1)[0].strip(" ：:-")
+    return name[:80]
 
 
 def parse_projects(text: str, spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sentences = split_sentences(text)
-    output: list[dict[str, Any]] = []
-    skills = detect_skills(text)
-    for sentence in sentences[:4]:
-        if len(sentence) < 12:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    block = normalized
+    marker = re.search(r"项目经历|项目经验|项目实践|科研经历", block)
+    if marker:
+        block = block[marker.end():]
+    stop = re.search(r"教育经历|相关技能|专业技能|技能清单|相关证书|证书|校园经历", block)
+    if stop and stop.start() > 80:
+        block = block[: stop.start()]
+    chunks = [item.strip() for item in re.split(r"(?=基于[^。；;]{4,90}(?:研究|分割|系统|平台|方法|模型|检测|识别))", block) if item.strip()]
+    candidates: list[str] = []
+    for chunk in chunks:
+        if len(chunk) < 24:
             continue
-        output.append(
-            {
-                "project_name": sentence[:24],
-                "project_summary": sentence[:200],
-                "candidate_role": None,
-                "responsibilities": [sentence[:120]],
-                "tech_stack": skills[:6],
-                "domain": None,
-                "complexity_level": "high" if any(token in sentence for token in ["高并发", "分布式", "千万", "亿级"]) else "medium",
-                "leadership_level": "lead" if any(token in sentence for token in ["主导", "负责人", "lead"]) else "used",
-                "evidence_spans": [spans[0]["span_id"]] if spans else [],
-                "confidence": 0.7,
-            }
-        )
-    return output[:3]
+        if re.match(r"^(性别|电话|邮箱|教育经历|专业技能|相关技能|com\b|www\b)", chunk, flags=re.IGNORECASE):
+            continue
+        if not re.search(r"项目|模型|分割|检测|分类|多模态|注意力|系统|平台|算法|研究", chunk):
+            continue
+        candidates.append(chunk[:360])
+    if not candidates:
+        for sentence in split_sentences(block):
+            if re.search(r"项目|模型|分割|检测|分类|多模态|注意力|系统|平台|算法|研究", sentence) and not re.match(r"^(性别|电话|邮箱|教育经历|专业技能|相关技能|com\b)", sentence, flags=re.IGNORECASE):
+                candidates.append(sentence[:360])
+    skills = detect_skills(normalized)
+    output: list[dict[str, Any]] = []
+    for index, sentence in enumerate(dedupe_keep_order(candidates)[:3]):
+        name = clean_project_name(sentence)
+        if len(name) < 6:
+            name = f"项目经历 {index + 1}"
+        tech_stack = detect_skills(sentence) or skills[:6]
+        output.append({
+            "project_name": name,
+            "project_summary": sentence[:220],
+            "candidate_role": None,
+            "responsibilities": [sentence[:160]],
+            "tech_stack": tech_stack[:8],
+            "domain": "医学图像" if re.search(r"HCC|超声|眼底|视网膜|医学", sentence, flags=re.IGNORECASE) else None,
+            "complexity_level": "high" if re.search(r"多模态|注意力|3D-CNN|SKA-Unet|Transformer|部署|上线", sentence, flags=re.IGNORECASE) else "medium",
+            "leadership_level": "lead" if re.search(r"主导|负责|负责人|lead", sentence, flags=re.IGNORECASE) else "used",
+            "evidence_spans": [spans[min(index, len(spans) - 1)]["span_id"]] if spans else [],
+            "confidence": 0.72,
+        })
+    return output
 
 
 def build_resume_profile_from_text(file_name: str, text: str, quality: str) -> dict[str, Any]:
@@ -337,20 +392,12 @@ def build_resume_profile_from_text(file_name: str, text: str, quality: str) -> d
         "education": education,
         "certifications": [],
         "risk_flags": [],
-        "extraction_confidence": {
-            "overall": 0.8 if quality == "good" else 0.58,
-            "by_section": {
-                "projects": 0.82 if projects else 0.45,
-                "skills": 0.8 if explicit_skills else 0.42,
-                "education": 0.9 if education else 0.5,
-            },
-        },
+        "extraction_confidence": {"overall": 0.8 if quality == "good" else 0.58, "by_section": {"projects": 0.72 if projects else 0.45, "skills": 0.8 if explicit_skills else 0.42, "education": 0.9 if education else 0.5}},
         "evidence_spans": spans,
     }
     if quality != "good":
         profile["risk_flags"].append({"type": "text_quality", "severity": "medium", "message": "文本质量较弱，建议人工复核"})
     return profile
-
 
 def extract_text_from_ocr_payload(raw: Any) -> str | None:
     obj = raw if isinstance(raw, dict) else {}
@@ -407,6 +454,500 @@ def get_screening_runtime_data(client: Client) -> tuple[dict[str, Any], list[dic
         .execute()
     )
     return company_settings, llm_models
+
+
+def openai_chat_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
+
+
+def pick_active_llm_model(settings: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any] | None:
+    active_model_id = normalize_text(settings.get("active_llm_model_id"))
+    if active_model_id:
+        for model in models:
+            if normalize_text(model.get("id")) == active_model_id and model.get("is_active") is True:
+                return model
+    for model in models:
+        if model.get("is_active") is True:
+            return model
+    return None
+
+
+def extract_json_object_from_text(text: str) -> Any:
+    raw = normalize_text(text)
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start : end + 1])
+        raise
+
+
+async def call_openai_compatible_json(model: dict[str, Any], system_prompt: str, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    model_name = normalize_text(model.get("model_name"))
+    base_url = normalize_text(model.get("base_url"))
+    api_key = normalize_text(model.get("api_key_encrypted"))
+    if not model_name or not base_url or not api_key:
+        raise RuntimeError("Active LLM model is missing model_name, base_url, or api_key")
+
+    # The original frontend screening pipeline used 120s as the effective default.
+    # Keeping that floor here prevents resume-profile extraction from silently
+    # falling back to the rough rule parser when a model is just slow.
+    timeout_ms = max(120000, min(180000, int(to_number(model.get("timeout_ms"), 120000))))
+    def make_body(include_response_format: bool) -> dict[str, Any]:
+        body = {
+            "model": model_name,
+            "temperature": max(0.0, min(2.0, to_number(model.get("temperature"), 0.2))),
+            "max_tokens": max(128, min(8192, int(to_number(model.get("max_tokens"), 2048)))),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+        }
+        if include_response_format:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout_ms / 1000, trust_env=False) as client:
+            response = await client.post(openai_chat_url(base_url), headers=headers, json=make_body(True))
+            if response.status_code in {400, 404, 415, 422}:
+                response = await client.post(openai_chat_url(base_url), headers=headers, json=make_body(False))
+            response.raise_for_status()
+            raw = response.json()
+    except httpx.TimeoutException as error:
+        raise RuntimeError(f"LLM request timed out after {round(timeout_ms / 1000)} seconds") from error
+    except httpx.HTTPStatusError as error:
+        detail = normalize_text(error.response.text)
+        if len(detail) > 220:
+            detail = f"{detail[:220]}..."
+        raise RuntimeError(f"LLM HTTP {error.response.status_code}{': ' + detail if detail else ''}") from error
+    except httpx.RequestError as error:
+        raise RuntimeError(f"LLM request failed: {error.__class__.__name__}") from error
+    choices = raw.get("choices") if isinstance(raw, dict) else None
+    content = ""
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(message, dict):
+            content = normalize_text(message.get("content"))
+    if not content:
+        raise RuntimeError("LLM response did not include message content")
+    return extract_json_object_from_text(content), raw
+
+
+def clamp_float(value: Any, fallback: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, to_number(value, fallback)))
+
+
+def clamp_int(value: Any, fallback: int, low: int = 0, high: int = 100) -> int:
+    return max(low, min(high, round(to_number(value, fallback))))
+
+
+def normalize_profile_from_llm(data: Any, base_profile: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return base_profile
+    basic = data.get("basic_profile") if isinstance(data.get("basic_profile"), dict) else {}
+    confidence = data.get("extraction_confidence") if isinstance(data.get("extraction_confidence"), dict) else {}
+    by_section = confidence.get("by_section") if isinstance(confidence.get("by_section"), dict) else {}
+    base_basic = base_profile.get("basic_profile") if isinstance(base_profile.get("basic_profile"), dict) else {}
+    base_confidence = base_profile.get("extraction_confidence") if isinstance(base_profile.get("extraction_confidence"), dict) else {}
+    base_by_section = base_confidence.get("by_section") if isinstance(base_confidence.get("by_section"), dict) else {}
+    evidence_rows = base_profile.get("evidence_spans") if isinstance(base_profile.get("evidence_spans"), list) else []
+    evidence_by_id = {
+        normalize_text(item.get("span_id")): normalize_text(item.get("text_excerpt"))
+        for item in evidence_rows
+        if isinstance(item, dict) and normalize_text(item.get("span_id"))
+    }
+    rejected_messages: list[str] = []
+
+    def valid_evidence_ids(value: Any) -> list[str]:
+        return [item for item in to_string_array(value) if item in evidence_by_id]
+
+    def value_has_text_evidence(value: Any) -> bool:
+        text = normalize_text(value)
+        if not text:
+            return False
+        lowered = text.lower()
+        return any(lowered in excerpt.lower() for excerpt in evidence_by_id.values())
+
+    def keep_basic_text(field: str) -> Any:
+        candidate_value = normalize_text(basic.get(field))
+        if candidate_value and value_has_text_evidence(candidate_value):
+            return candidate_value
+        if candidate_value and candidate_value != normalize_text(base_basic.get(field)):
+            rejected_messages.append(f"字段 {field} 缺少简历证据，已保留基础解析结果")
+        return base_basic.get(field)
+
+    def keep_years() -> Any:
+        candidate_value = basic.get("years_of_experience")
+        if isinstance(candidate_value, (int, float)) and value_has_text_evidence(str(int(candidate_value))):
+            return candidate_value
+        if candidate_value is not None and candidate_value != base_basic.get("years_of_experience"):
+            rejected_messages.append("工作年限缺少简历证据，已保留基础解析结果")
+        return base_basic.get("years_of_experience")
+
+    def skill_rows(value: Any, fallback: list[dict[str, Any]], inferred: bool = False) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return fallback
+        rows: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            skill = normalize_text(item.get("skill"))
+            if not skill:
+                continue
+            evidence_ids = valid_evidence_ids(item.get("evidence_span_ids"))
+            if not evidence_ids:
+                rejected_messages.append(f"技能 {skill} 缺少有效证据，已忽略")
+                continue
+            row = {
+                "skill": skill,
+                "confidence": clamp_float(item.get("confidence"), 0.75),
+                "evidence_span_ids": evidence_ids,
+            }
+            if inferred:
+                row["inference_reason"] = normalize_text(item.get("inference_reason")) or "LLM inferred"
+            rows.append(row)
+        return rows or fallback
+
+    def project_rows(value: Any, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return fallback
+        rows: list[dict[str, Any]] = []
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict):
+                continue
+            project_name = normalize_text(item.get("project_name")) or f"Project {index}"
+            evidence_ids = valid_evidence_ids(item.get("evidence_spans"))
+            if not evidence_ids:
+                rejected_messages.append(f"项目 {project_name} 缺少有效证据，已忽略")
+                continue
+            rows.append(
+                {
+                    "project_name": project_name,
+                    "project_summary": normalize_text(item.get("project_summary")),
+                    "candidate_role": normalize_text(item.get("candidate_role")) or None,
+                    "responsibilities": to_string_array(item.get("responsibilities")),
+                    "tech_stack": [normalize_skill(skill) for skill in to_string_array(item.get("tech_stack"))],
+                    "domain": normalize_text(item.get("domain")) or None,
+                    "complexity_level": normalize_text(item.get("complexity_level")) if normalize_text(item.get("complexity_level")) in {"low", "medium", "high", "unknown"} else "unknown",
+                    "leadership_level": normalize_text(item.get("leadership_level")) if normalize_text(item.get("leadership_level")) in {"aware", "used", "independent", "lead", "unknown"} else "unknown",
+                    "evidence_spans": evidence_ids,
+                    "confidence": clamp_float(item.get("confidence"), 0.75),
+                }
+            )
+        return rows or fallback
+
+    normalized_basic_profile = {
+        "full_name": keep_basic_text("full_name"),
+        "email": keep_basic_text("email"),
+        "phone": keep_basic_text("phone"),
+        "current_title": keep_basic_text("current_title"),
+        "years_of_experience": keep_years(),
+    }
+    normalized_explicit_skills = skill_rows(data.get("explicit_skills"), base_profile.get("explicit_skills", []))
+    normalized_inferred_skills = skill_rows(data.get("inferred_skills"), base_profile.get("inferred_skills", []), inferred=True)
+    normalized_projects = project_rows(data.get("projects"), base_profile.get("projects", []))
+    risk_flags = data.get("risk_flags") if isinstance(data.get("risk_flags"), list) else base_profile.get("risk_flags", [])
+    if rejected_messages:
+        existing_flags = risk_flags if isinstance(risk_flags, list) else []
+        risk_flags = [
+            *existing_flags,
+            {
+                "type": "llm_evidence_rejected",
+                "severity": "medium",
+                "message": "；".join(dedupe_keep_order(rejected_messages)[:4]),
+            },
+        ]
+
+    return {
+        **base_profile,
+        "basic_profile": normalized_basic_profile,
+        "explicit_skills": normalized_explicit_skills,
+        "inferred_skills": normalized_inferred_skills,
+        "projects": normalized_projects,
+        "work_experience": data.get("work_experience") if isinstance(data.get("work_experience"), list) else base_profile.get("work_experience", []),
+        "education": data.get("education") if isinstance(data.get("education"), list) else base_profile.get("education", []),
+        "certifications": data.get("certifications") if isinstance(data.get("certifications"), list) else base_profile.get("certifications", []),
+        "risk_flags": risk_flags,
+        "extraction_confidence": {
+            "overall": clamp_float(confidence.get("overall"), to_number(base_confidence.get("overall"), 0.7)),
+            "by_section": {
+                "projects": clamp_float(by_section.get("projects"), to_number(base_by_section.get("projects"), 0.7)),
+                "skills": clamp_float(by_section.get("skills"), to_number(base_by_section.get("skills"), 0.7)),
+                "education": clamp_float(by_section.get("education"), to_number(base_by_section.get("education"), 0.7)),
+            },
+        },
+    }
+
+
+def normalize_profile_from_llm(data: Any, base_profile: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return base_profile
+    basic = data.get("basic_profile") if isinstance(data.get("basic_profile"), dict) else {}
+    confidence = data.get("extraction_confidence") if isinstance(data.get("extraction_confidence"), dict) else {}
+    by_section = confidence.get("by_section") if isinstance(confidence.get("by_section"), dict) else {}
+    base_basic = base_profile.get("basic_profile") if isinstance(base_profile.get("basic_profile"), dict) else {}
+    base_confidence = base_profile.get("extraction_confidence") if isinstance(base_profile.get("extraction_confidence"), dict) else {}
+    base_by_section = base_confidence.get("by_section") if isinstance(base_confidence.get("by_section"), dict) else {}
+    evidence_rows = base_profile.get("evidence_spans") if isinstance(base_profile.get("evidence_spans"), list) else []
+    evidence_by_id = {
+        normalize_text(item.get("span_id")): normalize_text(item.get("text_excerpt"))
+        for item in evidence_rows
+        if isinstance(item, dict) and normalize_text(item.get("span_id"))
+    }
+    rejected_messages: list[str] = []
+
+    def valid_evidence_ids(value: Any) -> list[str]:
+        return [item for item in to_string_array(value) if item in evidence_by_id]
+
+    def value_has_text_evidence(value: Any) -> bool:
+        text = normalize_text(value)
+        return bool(text) and any(text.lower() in excerpt.lower() for excerpt in evidence_by_id.values())
+
+    def keep_basic_text(field: str) -> Any:
+        candidate_value = normalize_text(basic.get(field))
+        if candidate_value and value_has_text_evidence(candidate_value):
+            return candidate_value
+        if candidate_value and candidate_value != normalize_text(base_basic.get(field)):
+            rejected_messages.append(f"Field {field} has no resume evidence; kept rule-based value")
+        return base_basic.get(field)
+
+    def keep_years() -> Any:
+        candidate_value = basic.get("years_of_experience")
+        if isinstance(candidate_value, (int, float)) and value_has_text_evidence(str(int(candidate_value))):
+            return candidate_value
+        if candidate_value is not None and candidate_value != base_basic.get("years_of_experience"):
+            rejected_messages.append("Years of experience has no resume evidence; kept rule-based value")
+        return base_basic.get("years_of_experience")
+
+    def skill_rows(value: Any, fallback: list[dict[str, Any]], inferred: bool = False) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return fallback
+        rows: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            skill = normalize_text(item.get("skill"))
+            if not skill:
+                continue
+            evidence_ids = valid_evidence_ids(item.get("evidence_span_ids"))
+            if not evidence_ids:
+                rejected_messages.append(f"Skill {skill} has no valid evidence; ignored")
+                continue
+            row = {
+                "skill": normalize_skill(skill),
+                "confidence": clamp_float(item.get("confidence"), 0.75),
+                "evidence_span_ids": evidence_ids,
+            }
+            if inferred:
+                row["inference_reason"] = normalize_text(item.get("inference_reason")) or "Inferred from resume context"
+            rows.append(row)
+        return rows or fallback
+
+    def project_rows(value: Any, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return fallback
+        rows: list[dict[str, Any]] = []
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict):
+                continue
+            project_name = normalize_text(item.get("project_name")) or f"项目经历 {index}"
+            evidence_ids = valid_evidence_ids(item.get("evidence_spans"))
+            if not evidence_ids:
+                rejected_messages.append(f"Project {project_name} has no valid evidence; ignored")
+                continue
+            rows.append(
+                {
+                    "project_name": project_name,
+                    "project_summary": normalize_text(item.get("project_summary")),
+                    "candidate_role": normalize_text(item.get("candidate_role")) or None,
+                    "responsibilities": to_string_array(item.get("responsibilities")),
+                    "tech_stack": [normalize_skill(skill) for skill in to_string_array(item.get("tech_stack"))],
+                    "domain": normalize_text(item.get("domain")) or None,
+                    "complexity_level": normalize_text(item.get("complexity_level")) if normalize_text(item.get("complexity_level")) in {"low", "medium", "high", "unknown"} else "unknown",
+                    "leadership_level": normalize_text(item.get("leadership_level")) if normalize_text(item.get("leadership_level")) in {"aware", "used", "independent", "lead", "unknown"} else "unknown",
+                    "evidence_spans": evidence_ids,
+                    "confidence": clamp_float(item.get("confidence"), 0.75),
+                }
+            )
+        return rows or fallback
+
+    normalized_basic_profile = {
+        "full_name": keep_basic_text("full_name"),
+        "email": keep_basic_text("email"),
+        "phone": keep_basic_text("phone"),
+        "current_title": keep_basic_text("current_title"),
+        "years_of_experience": keep_years(),
+    }
+    normalized_explicit_skills = skill_rows(data.get("explicit_skills"), base_profile.get("explicit_skills", []))
+    normalized_inferred_skills = skill_rows(data.get("inferred_skills"), base_profile.get("inferred_skills", []), inferred=True)
+    normalized_projects = project_rows(data.get("projects"), base_profile.get("projects", []))
+    risk_flags = data.get("risk_flags") if isinstance(data.get("risk_flags"), list) else base_profile.get("risk_flags", [])
+    if rejected_messages:
+        risk_flags = [
+            *(risk_flags if isinstance(risk_flags, list) else []),
+            {
+                "type": "llm_evidence_rejected",
+                "severity": "medium",
+                "message": " | ".join(dedupe_keep_order(rejected_messages)[:4]),
+            },
+        ]
+
+    return {
+        **base_profile,
+        "basic_profile": normalized_basic_profile,
+        "explicit_skills": normalized_explicit_skills,
+        "inferred_skills": normalized_inferred_skills,
+        "projects": normalized_projects,
+        "work_experience": data.get("work_experience") if isinstance(data.get("work_experience"), list) else base_profile.get("work_experience", []),
+        "education": data.get("education") if isinstance(data.get("education"), list) else base_profile.get("education", []),
+        "certifications": data.get("certifications") if isinstance(data.get("certifications"), list) else base_profile.get("certifications", []),
+        "risk_flags": risk_flags,
+        "extraction_confidence": {
+            "overall": clamp_float(confidence.get("overall"), to_number(base_confidence.get("overall"), 0.7)),
+            "by_section": {
+                "projects": clamp_float(by_section.get("projects"), to_number(base_by_section.get("projects"), 0.7)),
+                "skills": clamp_float(by_section.get("skills"), to_number(base_by_section.get("skills"), 0.7)),
+                "education": clamp_float(by_section.get("education"), to_number(base_by_section.get("education"), 0.7)),
+            },
+        },
+    }
+
+
+async def enhance_resume_profile_with_llm(model: dict[str, Any] | None, file_name: str, text: str, base_profile: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str, bool]:
+    if not model:
+        return base_profile, {"mode": "phase1-rule-based-bootstrap", "generated_at": now_iso(), "routing": {"enabled": False}}, "rule-based-bootstrap", False
+    system_prompt = (
+        "You are a resume structuring engine. Return valid JSON only. "
+        "Use Simplified Chinese for readable text. Do not fabricate evidence; use given span ids. "
+        "If a field is not directly supported by resume_text or evidence_spans, return null or an empty array. "
+        "Every explicit skill and project must include at least one evidence span id from the provided list."
+    )
+    payload = {
+        "task": "extract_resume_profile",
+        "schema": {
+            "basic_profile": {"full_name": "string|null", "email": "string|null", "phone": "string|null", "current_title": "string|null", "years_of_experience": "number|null"},
+            "explicit_skills": [{"skill": "string", "confidence": "number", "evidence_span_ids": ["sp_1"]}],
+            "inferred_skills": [{"skill": "string", "inference_reason": "string", "confidence": "number", "evidence_span_ids": ["sp_2"]}],
+            "projects": [{"project_name": "string", "project_summary": "string", "candidate_role": "string|null", "responsibilities": ["string"], "tech_stack": ["string"], "domain": "string|null", "complexity_level": "low|medium|high|unknown", "leadership_level": "aware|used|independent|lead|unknown", "evidence_spans": ["sp_1"], "confidence": "number"}],
+            "work_experience": [],
+            "education": [],
+            "certifications": [],
+            "risk_flags": [{"type": "string", "severity": "low|medium|high", "message": "string"}],
+            "extraction_confidence": {"overall": "number", "by_section": {"projects": "number", "skills": "number", "education": "number"}},
+        },
+        "file_name": file_name,
+        "resume_text": text[:14000],
+        "evidence_spans": [{"span_id": item.get("span_id"), "text_excerpt": item.get("text_excerpt")} for item in base_profile.get("evidence_spans", [])],
+    }
+    try:
+        parsed, raw = await call_openai_compatible_json(model, system_prompt, payload)
+        enhanced = normalize_profile_from_llm(parsed, base_profile)
+        llm_raw = {
+            "mode": "api_key",
+            "model": normalize_text(model.get("model_name")),
+            "payload": raw,
+            "generated_at": now_iso(),
+            "routing": {"enabled": True, "selected_model": normalize_text(model.get("model_name")), "attempts": 1},
+        }
+        return enhanced, llm_raw, normalize_text(model.get("model_name")) or "llm", True
+    except Exception as error:
+        fallback = dict(base_profile)
+        fallback["risk_flags"] = [*fallback.get("risk_flags", []), {"type": "llm_fallback", "severity": "medium", "message": f"LLM profile extraction failed: {error}"}]
+        return fallback, {"mode": "bootstrap-fallback", "error": str(error), "generated_at": now_iso(), "routing": {"enabled": True, "selected_model": normalize_text(model.get("model_name")), "attempts": 1}}, "rule-based-bootstrap", False
+
+
+def normalize_match_from_llm(data: Any, base_match: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return base_match
+    recommendation = normalize_text(data.get("recommendation"))
+    if recommendation not in {"strong_match", "partial_match", "weak_match", "reject"}:
+        recommendation = base_match.get("recommendation")
+    matched_projects = data.get("matched_projects") if isinstance(data.get("matched_projects"), list) else base_match.get("matched_projects", [])
+    requirement_breakdown = data.get("requirement_breakdown") if isinstance(data.get("requirement_breakdown"), list) else base_match.get("requirement_breakdown", [])
+    return {
+        **base_match,
+        "overall_score": clamp_int(data.get("overall_score"), int(to_number(base_match.get("overall_score"), 0))),
+        "recommendation": recommendation,
+        "must_have_match_score": clamp_int(data.get("must_have_match_score"), int(to_number(base_match.get("must_have_match_score"), 0))),
+        "skill_match_score": clamp_int(data.get("skill_match_score"), int(to_number(base_match.get("skill_match_score"), 0))),
+        "project_relevance_score": clamp_int(data.get("project_relevance_score"), int(to_number(base_match.get("project_relevance_score"), 0))),
+        "experience_match_score": clamp_int(data.get("experience_match_score"), int(to_number(base_match.get("experience_match_score"), 0))),
+        "education_match_score": clamp_int(data.get("education_match_score"), int(to_number(base_match.get("education_match_score"), 0))),
+        "matched_skills": to_string_array(data.get("matched_skills")) or base_match.get("matched_skills", []),
+        "missing_skills": to_string_array(data.get("missing_skills")) or base_match.get("missing_skills", []),
+        "matched_projects": matched_projects,
+        "concerns": to_string_array(data.get("concerns")) or base_match.get("concerns", []),
+        "summary_reason": normalize_text(data.get("summary_reason")) or base_match.get("summary_reason"),
+        "confidence": clamp_float(data.get("confidence"), to_number(base_match.get("confidence"), 0.7)),
+        "evidence_links": to_string_array(data.get("evidence_links")) or base_match.get("evidence_links", []),
+        "requirement_breakdown": requirement_breakdown,
+    }
+
+
+async def enhance_match_with_llm(model: dict[str, Any] | None, profile: dict[str, Any], requirement: dict[str, Any], base_match: dict[str, Any], weights: dict[str, float]) -> tuple[dict[str, Any], dict[str, Any], str, bool]:
+    if not model:
+        return base_match, {"mode": "phase1-rule-based-bootstrap", "generated_at": now_iso(), "routing": {"enabled": False}}, "rule-based-bootstrap", False
+    system_prompt = (
+        "You are a strict candidate-position matching evaluator. Return valid JSON only. "
+        "Readable fields must be Simplified Chinese. Distinguish unknown from not_met."
+    )
+    payload = {
+        "task": "match_candidate_position",
+        "schema": {
+            "overall_score": "0-100",
+            "recommendation": "strong_match|partial_match|weak_match|reject",
+            "must_have_match_score": "0-100",
+            "skill_match_score": "0-100",
+            "project_relevance_score": "0-100",
+            "experience_match_score": "0-100",
+            "education_match_score": "0-100",
+            "matched_skills": ["string"],
+            "missing_skills": ["string"],
+            "matched_projects": [{"project_name": "string", "relevance_score": "0-100", "evidence_span_ids": ["sp_1"]}],
+            "concerns": ["string"],
+            "summary_reason": "string",
+            "confidence": "0-1",
+            "evidence_links": ["sp_1"],
+            "requirement_breakdown": [{"requirement": "string", "status": "met|not_met|unknown", "reason": "string"}],
+        },
+        "scoring_weights": weights,
+        "requirement": requirement,
+        "profile": {
+            "basic_profile": profile.get("basic_profile"),
+            "explicit_skills": profile.get("explicit_skills"),
+            "inferred_skills": profile.get("inferred_skills"),
+            "projects": profile.get("projects"),
+            "education": profile.get("education"),
+            "risk_flags": profile.get("risk_flags"),
+        },
+    }
+    try:
+        parsed, raw = await call_openai_compatible_json(model, system_prompt, payload)
+        enhanced = normalize_match_from_llm(parsed, base_match)
+        llm_raw = {
+            "mode": "api_key",
+            "model": normalize_text(model.get("model_name")),
+            "payload": raw,
+            "generated_at": now_iso(),
+            "routing": {"enabled": True, "selected_model": normalize_text(model.get("model_name")), "attempts": 1},
+        }
+        return enhanced, llm_raw, normalize_text(model.get("model_name")) or "llm", True
+    except Exception as error:
+        fallback = dict(base_match)
+        fallback["concerns"] = dedupe_keep_order([*to_string_array(fallback.get("concerns")), f"LLM match failed, used rule score: {error}"])
+        return fallback, {"mode": "bootstrap-fallback", "error": str(error), "generated_at": now_iso(), "routing": {"enabled": True, "selected_model": normalize_text(model.get("model_name")), "attempts": 1}}, "rule-based-bootstrap", False
 
 
 def extract_text_from_upload(file_name: str, content: bytes) -> tuple[str, str, str]:
@@ -553,6 +1094,32 @@ def build_question_plan(candidate: dict[str, Any], position: dict[str, Any]) -> 
     return questions[:8]
 
 
+def extend_question_plan_to_count(question_plan: list[dict[str, Any]], target_count: int | None) -> list[dict[str, Any]]:
+    if not target_count or target_count <= len(question_plan):
+        return question_plan
+    templates = [
+        ("per-4-evaluation", "请你设计一个离线评估方案：指标怎么选、阈值怎么定、误差怎么分桶？", "evaluation"),
+        ("per-5-ab-test", "如果模型要上线，你会怎么设计 A/B 测试、监控指标和回滚策略？", "experiment"),
+        ("per-6-scale", "当训练数据扩大到百万级时，你会从数据 I/O、训练策略和分布式角度怎么提效？", "scalability"),
+        ("per-7-deploy", "请讲讲你如何把 PyTorch 模型部署成在线推理服务，并验证性能和正确性。", "deployment"),
+        ("per-8-tradeoff", "如果要引入 Transformer 替换现有结构，你会如何评估收益、成本和风险？", "tradeoff"),
+    ]
+    output = list(question_plan)
+    for question_id, prompt, dimension in templates:
+        if len(output) >= target_count:
+            break
+        output.append(
+            {
+                "id": question_id,
+                "dimension": dimension,
+                "difficulty": "medium",
+                "prompt": prompt,
+                "expected_signals": ["方案设计", "验证方法", "风险控制"],
+            }
+        )
+    return output[:target_count]
+
+
 def to_work_hints(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -591,6 +1158,8 @@ def build_resume_text(candidate: dict[str, Any], profile: dict[str, Any] | None,
 
     parser_raw_json = profile.get("parser_raw_json") if profile else None
     preview = normalize_text(parser_raw_json.get("text_preview")) if isinstance(parser_raw_json, dict) else ""
+    work_experience_cues = "- " + "\n- ".join(work_items) if work_items else ""
+    project_experience_cues = "- " + "\n- ".join(project_lines) if project_lines else ""
 
     lines = [
         f"Candidate name: {candidate.get('name') or 'unknown'}",
@@ -599,8 +1168,8 @@ def build_resume_text(candidate: dict[str, Any], profile: dict[str, Any] | None,
         f"Highlight summary: {candidate.get('highlight') or 'none'}",
         f"Explicit skills: {', '.join(explicit_skills)}" if explicit_skills else "",
         f"Inferred skills: {', '.join(inferred_skills)}" if inferred_skills else "",
-        f"Work experience cues:\n- {'\n- '.join(work_items)}" if work_items else "",
-        f"Project experience:\n- {'\n- '.join(project_lines)}" if project_lines else "",
+        f"Work experience cues:\n{work_experience_cues}" if work_experience_cues else "",
+        f"Project experience:\n{project_experience_cues}" if project_experience_cues else "",
         f"Resume text preview:\n{preview}" if preview else "",
     ]
     return "\n\n".join(line for line in lines if line)
@@ -653,6 +1222,7 @@ def build_job_description_text(position: dict[str, Any], parsed_requirement: dic
     nice_to_have = to_string_array(parsed_requirement.get("nice_to_have_skills") if parsed_requirement else None)[:8]
     responsibilities = to_string_array(parsed_requirement.get("core_responsibilities") if parsed_requirement else None)[:8]
     source_text = normalize_text(parsed_requirement.get("source_text")) if parsed_requirement else ""
+    responsibility_cues = "- " + "\n- ".join(responsibilities) if responsibilities else ""
     lines = [
         f"Job title: {position.get('title') or 'unknown'}",
         f"Department: {position.get('department') or 'unknown'}",
@@ -661,7 +1231,7 @@ def build_job_description_text(position: dict[str, Any], parsed_requirement: dic
         f"Technical requirements:\n{normalize_text(position.get('technical_requirements'))}" if normalize_text(position.get("technical_requirements")) else "",
         f"Must-have skills: {', '.join(must_have)}" if must_have else "",
         f"Nice-to-have skills: {', '.join(nice_to_have)}" if nice_to_have else "",
-        f"Core responsibilities:\n- {'\n- '.join(responsibilities)}" if responsibilities else "",
+        f"Core responsibilities:\n{responsibility_cues}" if responsibility_cues else "",
         f"Job source text:\n{source_text}" if source_text else "",
     ]
     return "\n\n".join(line for line in lines if line)
@@ -1443,9 +2013,48 @@ def build_match_output(profile: dict[str, Any], requirement: dict[str, Any], wei
 
     extraction_confidence = profile.get("extraction_confidence") if isinstance(profile.get("extraction_confidence"), dict) else {}
     overall_confidence = to_number(extraction_confidence.get("overall"), 0.6)
+    requirement_breakdown = [
+        {
+            "requirement": f"must_have:{skill}",
+            "status": "met" if skill in candidate_skills else "not_met",
+            "reason": "候选人技能中有直接证据" if skill in candidate_skills else "未识别到直接证据",
+        }
+        for skill in must_have_skills
+    ]
+    if required_years is None:
+        requirement_breakdown.append({"requirement": "experience_years", "status": "unknown", "reason": "岗位未设置经验年限"})
+    elif years is None:
+        requirement_breakdown.append({"requirement": f"experience_years>={required_years}", "status": "unknown", "reason": "候选人经验年限缺失"})
+    elif to_number(years) >= to_number(required_years):
+        requirement_breakdown.append({"requirement": f"experience_years>={required_years}", "status": "met", "reason": f"候选人经验 {years} 年"})
+    else:
+        requirement_breakdown.append({"requirement": f"experience_years>={required_years}", "status": "not_met", "reason": f"候选人经验 {years} 年"})
+
+    if not required_edu_level:
+        requirement_breakdown.append({"requirement": "education_requirement", "status": "unknown", "reason": "岗位未设置学历要求"})
+    elif not candidate_edu_level:
+        requirement_breakdown.append({"requirement": f"education>={required_edu_level}", "status": "unknown", "reason": "候选人学历信息缺失"})
+    elif education_rank(candidate_edu_level) >= education_rank(required_edu_level):
+        requirement_breakdown.append({"requirement": f"education>={required_edu_level}", "status": "met", "reason": f"候选人学历 {candidate_edu_level}"})
+    else:
+        requirement_breakdown.append({"requirement": f"education>={required_edu_level}", "status": "not_met", "reason": f"候选人学历 {candidate_edu_level}"})
+
+    concerns = dedupe_keep_order(
+        [
+            *([f"缺少关键技能：{', '.join(missing_skills[:3])}"] if missing_skills else []),
+            *[normalize_text(item.get("message")) for item in risk_flags if isinstance(item, dict) and normalize_text(item.get("message"))],
+            *(["存在信息缺失项，建议补充后复核"] if any(item["status"] == "unknown" for item in requirement_breakdown) else []),
+        ]
+    )
+    summary_reason = (
+        f"核心技能匹配度较高，最相关项目为 {matched_projects[0]['project_name'] if matched_projects else '暂无'}。"
+        if not missing_skills
+        else f"具备部分岗位能力，但缺少 {'、'.join(missing_skills[:2])} 等关键项。"
+    )
+    recommendation = score_to_recommendation(overall_score)
     return {
         "overall_score": overall_score,
-        "recommendation": score_to_recommendation(overall_score),
+        "recommendation": recommendation,
         "must_have_match_score": must_have_score,
         "skill_match_score": skill_score,
         "project_relevance_score": project_relevance_score,
@@ -1499,6 +2108,54 @@ def require_user(authorization: str | None) -> dict[str, Any]:
     if not isinstance(payload, dict) or not payload.get("id"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return payload
+
+
+def room_token_secret() -> str:
+    return os.getenv("INTERVIEW_ROOM_TOKEN_SECRET") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or env("VITE_SUPABASE_ANON_KEY")
+
+
+def sign_room_token(interview_id: str, expires_at: int) -> str:
+    return hmac.new(room_token_secret().encode("utf-8"), f"{interview_id}:{expires_at}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def issue_room_access_token(interview_id: str, expires_at: int | None = None) -> str:
+    expires_at = expires_at or int(time.time()) + 12 * 60 * 60
+    signature = sign_room_token(interview_id, expires_at)
+    return f"room.v1.{interview_id}.{expires_at}.{signature}"
+
+
+def verify_room_access_token(token: str | None, expected_interview_id: str | None = None) -> dict[str, Any]:
+    raw = normalize_text(token)
+    parts = raw.split(".")
+    if len(parts) != 5 or parts[0] != "room" or parts[1] != "v1":
+        raise HTTPException(status_code=401, detail="Invalid room access token")
+
+    interview_id = parts[2]
+    try:
+        expires_at = int(parts[3])
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid room access token") from exc
+
+    if expires_at < int(time.time()):
+        raise HTTPException(status_code=401, detail="Room access token expired")
+    if expected_interview_id and interview_id != expected_interview_id:
+        raise HTTPException(status_code=403, detail="Room access token mismatch")
+
+    expected = sign_room_token(interview_id, expires_at)
+    if not hmac.compare_digest(parts[4], expected):
+        raise HTTPException(status_code=401, detail="Invalid room access token")
+
+    return {"id": None, "room_interview_id": interview_id, "is_room_access": True}
+
+
+def require_user_or_room(authorization: str | None, access_token: str | None, expected_interview_id: str | None = None) -> dict[str, Any]:
+    if authorization and authorization.lower().startswith("bearer "):
+        return require_user(authorization)
+    return verify_room_access_token(access_token, expected_interview_id)
+
+
+def room_actor_id(actor: dict[str, Any], fallback: Any = None) -> str | None:
+    return normalize_text(actor.get("id")) or normalize_text(fallback) or None
 
 
 def is_missing_table_error(error: Exception, table_names: tuple[str, ...]) -> bool:
@@ -1604,6 +2261,38 @@ def next_turn_no(session_id: str) -> int:
     )
     latest = rows[0]["turn_no"] if rows else 0
     return int(latest) + 1
+
+
+def get_planned_question_prompt(question: dict[str, Any]) -> str:
+    return (
+        normalize_text(question.get("prompt"))
+        or normalize_text(question.get("rendered_text"))
+        or normalize_text(question.get("question_text"))
+    )
+
+
+def count_asked_main_questions(turns: list[dict[str, Any]]) -> int:
+    return len(
+        [
+            turn
+            for turn in turns
+            if turn.get("speaker") == "ai"
+            and isinstance(turn.get("metadata"), dict)
+            and normalize_text(turn["metadata"].get("kind")) == "question"
+        ]
+    )
+
+
+def next_planned_question(question_plan: list[Any], asked_question_count: int) -> tuple[int, dict[str, Any], str] | None:
+    if asked_question_count < 0 or asked_question_count >= len(question_plan):
+        return None
+    question = question_plan[asked_question_count]
+    if not isinstance(question, dict):
+        return None
+    prompt = get_planned_question_prompt(question)
+    if not prompt:
+        return None
+    return asked_question_count + 1, question, prompt
 
 
 def _salary_text(value: Any) -> str:
@@ -2681,7 +3370,7 @@ def create_interview_schedule(payload: UpsertInterviewSchedulePayload, authoriza
                 "location_type": payload.location_type,
                 "status": payload.status or "scheduled",
                 "join_url": payload.join_url,
-                "updated_by": user["id"],
+                "updated_by": interview_actor_id,
             }
         )
         .execute()
@@ -3323,13 +4012,14 @@ def update_upload_state(upload_id: str, payload: UploadStatePatchPayload, author
 
 @app.post("/api/uploads")
 def create_upload(payload: CreateUploadPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    require_user(authorization)
+    user = require_user(authorization)
     client = db.get_client()
     row = db.first(
         client.table("resume_uploads")
         .insert(
             [
                 {
+                    "uploaded_by": user["id"],
                     "position_id": payload.position_id,
                     "file_name": payload.file_name,
                     "file_path": payload.file_path,
@@ -3389,6 +4079,220 @@ async def upload_resume_content(
     }
 
 
+async def process_phase1_upload_async(
+    *,
+    position: dict[str, Any],
+    file_name: str,
+    content: bytes,
+    resume_upload_id: str,
+    file_hash: str,
+    authorization: str | None,
+) -> None:
+    try:
+        client = db.get_client()
+        company_settings, llm_models = get_screening_runtime_data(client)
+        active_llm_model = pick_active_llm_model(company_settings, llm_models)
+
+        update_upload_state(
+            resume_upload_id,
+            UploadStatePatchPayload(
+                patch={
+                    "pipeline_stage": "text_extraction",
+                    "status": "processing",
+                    "stage_started_at": now_iso(),
+                    "error_code": None,
+                    "error_message": None,
+                }
+            ),
+            authorization,
+        )
+
+        text, quality, source = extract_text_from_upload(file_name, content)
+        if quality != "good":
+            ocr_config = {
+                "enabled": bool(company_settings.get("ocr_enabled")),
+                "base_url": company_settings.get("ocr_base_url"),
+                "api_key": company_settings.get("ocr_api_key"),
+                "timeout_ms": company_settings.get("ocr_timeout_ms"),
+            }
+            try:
+                ocr_text = await call_ocr_service(content, file_name, ocr_config)
+                normalized_ocr = re.sub(r"\s+", " ", normalize_text(ocr_text)).strip()
+                if len(normalized_ocr) >= 120:
+                    text = normalized_ocr[:20000]
+                    quality = "good" if len(normalized_ocr) >= 300 else "poor"
+                    source = "ocr"
+                elif not text:
+                    text = f"File name: {file_name}; OCR result was insufficient. Manual review is recommended."
+                    quality = "poor"
+                    source = "fallback"
+            except Exception:
+                if not text:
+                    text = f"File name: {file_name}; OCR failed. Manual review is recommended."
+                    quality = "poor"
+                    source = "fallback"
+
+        update_upload_state(
+            resume_upload_id,
+            UploadStatePatchPayload(patch={"pipeline_stage": "profile_extraction", "status": "processing", "stage_started_at": now_iso()}),
+            authorization,
+        )
+
+        job_requirement = build_job_requirement_from_position(position)
+        match_weights = load_match_weights(client)
+        profile_payload = build_resume_profile_from_text(file_name, text, quality)
+        profile_payload, profile_llm_raw_json, profile_model_version, profile_used_llm = await enhance_resume_profile_with_llm(
+            active_llm_model,
+            file_name,
+            text,
+            profile_payload,
+        )
+
+        update_upload_state(
+            resume_upload_id,
+            UploadStatePatchPayload(patch={"pipeline_stage": "matching", "status": "processing", "stage_started_at": now_iso()}),
+            authorization,
+        )
+
+        match_output = build_match_output(profile_payload, job_requirement, match_weights)
+        match_output, match_llm_raw_json, match_model_version, match_used_llm = await enhance_match_with_llm(
+            active_llm_model,
+            profile_payload,
+            job_requirement,
+            match_output,
+            match_weights,
+        )
+        basic_profile = profile_payload["basic_profile"]
+        first_education = profile_payload["education"][0] if profile_payload["education"] else {}
+        years = basic_profile.get("years_of_experience")
+        candidate_patch = {
+            "p_id": position["id"],
+            "name": basic_profile.get("full_name") or re.sub(r"\.(pdf|doc|docx)$", "", file_name, flags=re.IGNORECASE) or "Unnamed candidate",
+            "title": basic_profile.get("current_title") or position.get("title") or "Unknown position",
+            "exp": f"{years} years" if isinstance(years, (int, float)) else "Experience unknown",
+            "exp_years": round(years) if isinstance(years, (int, float)) else None,
+            "edu": first_education.get("degree") if isinstance(first_education, dict) else "Education unknown",
+            "edu_level": first_education.get("degree") if isinstance(first_education, dict) else "Education unknown",
+            "age": None,
+            "match": int(match_output["overall_score"]),
+            "prev_company": None,
+            "tag": recommendation_to_tag(match_output["recommendation"]),
+            "highlight": match_output["summary_reason"],
+        }
+        llm_model_name = normalize_text(active_llm_model.get("model_name")) if active_llm_model else None
+        llm_routing = {
+            "enabled": bool(active_llm_model),
+            "selected_model": llm_model_name,
+            "profile_attempts": 1 if active_llm_model else 0,
+            "profile_used_llm": profile_used_llm,
+            "profile_selected_model": profile_model_version,
+            "match_attempts": 1 if active_llm_model else 0,
+            "match_used_llm": match_used_llm,
+            "match_selected_model": match_model_version,
+        }
+        persist_phase1_result(
+            PersistPhase1Payload(
+                position=position,
+                resume_upload_id=resume_upload_id,
+                file_hash=file_hash,
+                job_requirement=job_requirement,
+                candidate_patch=candidate_patch,
+                profile_payload={
+                    **profile_payload,
+                    "parser_raw_json": {
+                        "text_preview": text[:1000],
+                        "text_quality": quality,
+                        "text_source": source,
+                        "evidence_spans": profile_payload["evidence_spans"],
+                    },
+                },
+                profile_llm_raw_json=profile_llm_raw_json,
+                profile_model_version=profile_model_version,
+                match_output=match_output,
+                match_llm_raw_json=match_llm_raw_json,
+                match_model_version=match_model_version,
+                parsed_payload={
+                    "overall_score": match_output["overall_score"],
+                    "recommendation": match_output["recommendation"],
+                    "summary_reason": match_output["summary_reason"],
+                    "extraction_confidence": profile_payload["extraction_confidence"],
+                    "llm_routing": llm_routing,
+                },
+            ),
+            authorization,
+        )
+    except Exception as error:
+        message = str(error) if str(error) else "Unknown error"
+        fail_single_upload(resume_upload_id, UploadTerminalPayload(message=message, error_code="PHASE1_PIPELINE_ERROR"), authorization)
+
+
+@app.post("/api/screening/phase1/async")
+async def submit_phase1_screening_job(
+    background_tasks: BackgroundTasks,
+    position_json: str = Form(...),
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_user(authorization)
+    try:
+        position = json.loads(position_json)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Invalid position_json: {error}") from error
+
+    if not isinstance(position, dict) or not normalize_text(position.get("id")):
+        raise HTTPException(status_code=400, detail="position_json is invalid")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="file is empty")
+
+    file_hash = hashlib.sha256(content).hexdigest()
+    safe_file_name = re.sub(r"[^A-Za-z0-9._-]+", "-", file.filename or "resume")
+    upload_path = f"{position['id']}/{secrets.token_hex(8)}-{safe_file_name}"
+    upload_row = create_upload(
+        CreateUploadPayload(
+            position_id=str(position["id"]),
+            file_name=file.filename or "resume",
+            file_path=upload_path,
+            file_size_bytes=len(content),
+            mime_type=file.content_type,
+            file_hash=file_hash,
+        ),
+        authorization,
+    )
+    resume_upload_id = str(upload_row["id"])
+
+    try:
+        client = db.get_client()
+        client.storage.from_("resume-files").upload(
+            upload_path,
+            content,
+            {
+                "cache-control": "3600",
+                "upsert": "false",
+                "content-type": file.content_type or "application/octet-stream",
+            },
+        )
+    except Exception as error:
+        fail_single_upload(
+            resume_upload_id,
+            UploadTerminalPayload(message=str(error) or "Upload storage failed", error_code="UPLOAD_STORAGE_ERROR"),
+            authorization,
+        )
+        raise HTTPException(status_code=500, detail=str(error) or "Upload storage failed") from error
+
+    background_tasks.add_task(
+        process_phase1_upload_async,
+        position=position,
+        file_name=file.filename or "resume",
+        content=content,
+        resume_upload_id=resume_upload_id,
+        file_hash=file_hash,
+        authorization=authorization,
+    )
+    return {"ok": True, "resumeUploadId": resume_upload_id, "status": "processing"}
+
+
 @app.post("/api/screening/phase1")
 async def run_phase1_screening(
     position_json: str = Form(...),
@@ -3427,7 +4331,8 @@ async def run_phase1_screening(
 
     try:
         client = db.get_client()
-        company_settings, _ = get_screening_runtime_data(client)
+        company_settings, llm_models = get_screening_runtime_data(client)
+        active_llm_model = pick_active_llm_model(company_settings, llm_models)
         client.storage.from_("resume-files").upload(
             upload_path,
             content,
@@ -3492,6 +4397,12 @@ async def run_phase1_screening(
         job_requirement = build_job_requirement_from_position(position)
         match_weights = load_match_weights(client)
         profile_payload = build_resume_profile_from_text(file.filename or "resume", text, quality)
+        profile_payload, profile_llm_raw_json, profile_model_version, profile_used_llm = await enhance_resume_profile_with_llm(
+            active_llm_model,
+            file.filename or "resume",
+            text,
+            profile_payload,
+        )
 
         update_upload_state(
             resume_upload_id,
@@ -3506,6 +4417,13 @@ async def run_phase1_screening(
         )
 
         match_output = build_match_output(profile_payload, job_requirement, match_weights)
+        match_output, match_llm_raw_json, match_model_version, match_used_llm = await enhance_match_with_llm(
+            active_llm_model,
+            profile_payload,
+            job_requirement,
+            match_output,
+            match_weights,
+        )
         basic_profile = profile_payload["basic_profile"]
         first_education = profile_payload["education"][0] if profile_payload["education"] else {}
         years = basic_profile.get("years_of_experience")
@@ -3523,15 +4441,16 @@ async def run_phase1_screening(
             "tag": recommendation_to_tag(match_output["recommendation"]),
             "highlight": match_output["summary_reason"],
         }
-        profile_llm_raw_json = {
-            "mode": "phase1-rule-based-bootstrap",
-            "generated_at": now_iso(),
-            "routing": {"enabled": False},
-        }
-        match_llm_raw_json = {
-            "mode": "phase1-rule-based-bootstrap",
-            "generated_at": now_iso(),
-            "routing": {"enabled": False},
+        llm_model_name = normalize_text(active_llm_model.get("model_name")) if active_llm_model else None
+        llm_routing = {
+            "enabled": bool(active_llm_model),
+            "selected_model": llm_model_name,
+            "profile_attempts": 1 if active_llm_model else 0,
+            "profile_used_llm": profile_used_llm,
+            "profile_selected_model": profile_model_version,
+            "match_attempts": 1 if active_llm_model else 0,
+            "match_used_llm": match_used_llm,
+            "match_selected_model": match_model_version,
         }
         persist = persist_phase1_result(
             PersistPhase1Payload(
@@ -3550,16 +4469,16 @@ async def run_phase1_screening(
                     },
                 },
                 profile_llm_raw_json=profile_llm_raw_json,
-                profile_model_version="rule-based-bootstrap",
+                profile_model_version=profile_model_version,
                 match_output=match_output,
                 match_llm_raw_json=match_llm_raw_json,
-                match_model_version="rule-based-bootstrap",
+                match_model_version=match_model_version,
                 parsed_payload={
                     "overall_score": match_output["overall_score"],
                     "recommendation": match_output["recommendation"],
                     "summary_reason": match_output["summary_reason"],
                     "extraction_confidence": profile_payload["extraction_confidence"],
-                    "llm_routing": {"enabled": False},
+                    "llm_routing": llm_routing,
                 },
             ),
             authorization,
@@ -3663,7 +4582,8 @@ def cancel_single_upload(upload_id: str, payload: UploadTerminalPayload, authori
 
 @app.post("/api/screening/persist-phase1")
 def persist_phase1_result(payload: PersistPhase1Payload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    require_user(authorization)
+    user = require_user(authorization)
+    user_id = user["id"]
     client = db.get_client()
 
     upload = db.first(client.table("resume_uploads").select("id").eq("id", payload.resume_upload_id).limit(1).execute())
@@ -3736,6 +4656,7 @@ def persist_phase1_result(payload: PersistPhase1Payload, authorization: str | No
                         "prompt_version": "phase1-job-v1",
                         "model_version": "rule-based-bootstrap",
                         "pipeline_version": "phase1",
+                        "created_by": user_id,
                     }
                 ]
             )
@@ -3765,6 +4686,7 @@ def persist_phase1_result(payload: PersistPhase1Payload, authorization: str | No
                     "prompt_version": "phase1-resume-v1",
                     "model_version": payload.profile_model_version,
                     "pipeline_version": "phase1",
+                    "created_by": user_id,
                 }
             ]
         )
@@ -3814,6 +4736,7 @@ def persist_phase1_result(payload: PersistPhase1Payload, authorization: str | No
                     "prompt_version": "phase1-match-v1",
                     "model_version": payload.match_model_version,
                     "pipeline_version": "phase1",
+                    "created_by": user_id,
                 }
             ]
         )
@@ -4016,6 +4939,72 @@ def get_interview_report(interview_id: str, authorization: str | None = Header(d
     return reports[0] if reports else None
 
 
+@app.get("/api/interviews/room/{interview_id}")
+def get_public_interview_room(interview_id: str) -> dict[str, Any]:
+    client = db.get_client()
+    interview = db.first(
+        client.table("upcoming_interviews")
+        .select("id,candidate_id,name,stage,position,schedule_time,location_type,status,started_at,ended_at,room_password_set_at,session_id,ai_report_id")
+        .eq("id", interview_id)
+        .limit(1)
+        .execute()
+    )
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    candidate_id = normalize_text(interview.get("candidate_id"))
+    position_id = None
+    if candidate_id:
+        candidate = db.first(client.table("candidates").select("p_id").eq("id", candidate_id).limit(1).execute())
+        position_id = normalize_text(candidate.get("p_id")) if candidate else None
+
+    return {
+        **interview,
+        "position_id": position_id,
+        "interview_question_count": resolve_configured_interview_question_count(client, None),
+    }
+
+
+@app.get("/api/interviews/room/sessions/{session_id}/turns")
+def get_public_interview_room_turns(session_id: str, accessToken: str | None = None) -> dict[str, Any]:
+    client = db.get_client()
+    session = db.first(
+        client.table("interview_sessions")
+        .select("id,interview_id,question_plan")
+        .eq("id", session_id)
+        .limit(1)
+        .execute()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    verify_room_access_token(accessToken, normalize_text(session.get("interview_id")))
+    turns = db.many(
+        client.table("interview_turns")
+        .select("id,session_id,turn_no,speaker,content,input_mode,latency_ms,tokens_in,tokens_out,confidence,metadata,created_by,created_at")
+        .eq("session_id", session_id)
+        .order("turn_no")
+        .execute()
+    )
+    question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
+    return {"items": turns, "question_count": len(question_plan)}
+
+
+@app.get("/api/interviews/room/{interview_id}/report")
+def get_public_interview_room_report(interview_id: str, accessToken: str | None = None) -> dict[str, Any] | None:
+    verify_room_access_token(accessToken, interview_id)
+    client = db.get_client()
+    reports = db.many(
+        client.table("interview_reports")
+        .select("id,session_id,interview_id,candidate_id,overall_score,dimension_scores,strengths,risks,recommendation,evidence,summary,risk_score,human_confirmed,human_confirmed_by,human_confirmed_at,generated_by,created_at,updated_at")
+        .eq("interview_id", interview_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return reports[0] if reports else None
+
+
 @app.get("/api/interviews/sessions/{session_id}")
 def get_interview_session(session_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_user(authorization)
@@ -4052,12 +5041,14 @@ def get_candidate_position(candidate_id: str, authorization: str | None = Header
 
 @app.post("/api/interviews/prepare")
 def prepare_interview(payload: PrepareInterviewPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, payload.interviewId)
     client = db.get_client()
 
-    interview = db.first(client.table("upcoming_interviews").select("id,status,candidate_id").eq("id", payload.interviewId).limit(1).execute())
+    interview = db.first(client.table("upcoming_interviews").select("id,status,candidate_id,updated_by").eq("id", payload.interviewId).limit(1).execute())
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview_actor_id = room_actor_id(user, interview.get("updated_by"))
 
     candidate = db.first(client.table("candidates").select("id,name,title,prev_company,highlight").eq("id", payload.candidateId).limit(1).execute())
     if not candidate:
@@ -4112,6 +5103,7 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
         client,
         payload.questionCount if isinstance(payload.questionCount, int) and payload.questionCount > 0 else None,
     )
+    question_plan = extend_question_plan_to_count(question_plan, requested_question_count)
     if requested_question_count:
         question_plan = question_plan[:requested_question_count]
     skills = extract_skills_from_requirement(position.get("technical_requirements"))
@@ -4135,7 +5127,7 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
         "skills": skills,
             "rubric_version": "v2-core-and-personalized",
             "question_count": len(question_plan),
-            "prepared_by": user["id"],
+            "prepared_by": interview_actor_id,
             "prepared_at": now_iso(),
         }
 
@@ -4175,11 +5167,11 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
                     "position_id": payload.positionId,
                     "mode": payload.mode,
                     "status": "ready",
-                    "question_plan": question_plan,
-                    "context_payload": context_payload,
-                    "created_by": user["id"],
-                }
-            )
+                "question_plan": question_plan,
+                "context_payload": context_payload,
+                "created_by": interview_actor_id,
+            }
+        )
             .execute()
         )
         if not inserted:
@@ -4192,7 +5184,7 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
                 "candidate_id": payload.candidateId,
                 "status": "ready",
                 "session_id": session_id,
-                "updated_by": user["id"],
+                "updated_by": interview_actor_id,
             }
         ).eq("id", payload.interviewId).execute()
 
@@ -4208,8 +5200,25 @@ def prepare_interview(payload: PrepareInterviewPayload, authorization: str | Non
 
 @app.post("/api/interviews/start")
 def start_interview(payload: StartInterviewPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, payload.interviewId)
     client = db.get_client()
+
+    existing_ai_turns = db.many(
+        client.table("interview_turns")
+        .select("id,content,metadata,turn_no")
+        .eq("session_id", payload.sessionId)
+        .eq("speaker", "ai")
+        .order("turn_no")
+        .execute()
+    )
+    reusable_ai_turn = next(
+        (
+            turn
+            for turn in existing_ai_turns
+            if normalize_text(turn.get("content")) and not is_agent_system_error_message(turn.get("content"))
+        ),
+        None,
+    )
 
     session = db.first(
         client.table("interview_sessions")
@@ -4222,6 +5231,38 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
         raise HTTPException(status_code=404, detail="Session not found")
     if str(session.get("interview_id")) != payload.interviewId:
         raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    session_question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
+    if reusable_ai_turn:
+        now = now_iso()
+        client.table("interview_sessions").update(
+            {
+                "status": "running",
+                "started_at": session.get("started_at") or now,
+            }
+        ).eq("id", payload.sessionId).execute()
+
+        interview = db.first(client.table("upcoming_interviews").select("id,started_at,updated_by").eq("id", payload.interviewId).limit(1).execute())
+        if interview:
+            actor_id = room_actor_id(user, interview.get("updated_by"))
+            client.table("upcoming_interviews").update(
+                {
+                    "status": "in_progress",
+                    "session_id": payload.sessionId,
+                    "started_at": interview.get("started_at") or now,
+                    "updated_by": actor_id,
+                }
+            ).eq("id", payload.interviewId).execute()
+
+        return {
+            "ok": True,
+            "interview_id": payload.interviewId,
+            "session_id": payload.sessionId,
+            "status": "running",
+            "first_question": normalize_text(reusable_ai_turn.get("content")),
+            "question_count": len(session_question_plan),
+            "agent_status": "running",
+        }
 
     candidate_id = normalize_text(session.get("candidate_id"))
     position_id = normalize_text(session.get("position_id"))
@@ -4264,7 +5305,6 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
         .execute()
     )
 
-    session_question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
     requested_question_count = resolve_configured_interview_question_count(
         client,
         len(session_question_plan) if len(session_question_plan) > 0 else None,
@@ -4307,6 +5347,8 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
     if not mapped_plan or is_agent_system_error_message(opening_message):
         detail = opening_message if is_agent_system_error_message(opening_message) else "Agent did not return an interview question plan."
         raise HTTPException(status_code=502, detail=detail)
+    if session_question_plan and len(session_question_plan) > len(mapped_plan):
+        mapped_plan = session_question_plan
     now = now_iso()
     client.table("interview_sessions").update(
         {
@@ -4316,35 +5358,21 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
         }
     ).eq("id", payload.sessionId).execute()
 
-    interview = db.first(client.table("upcoming_interviews").select("id,started_at").eq("id", payload.interviewId).limit(1).execute())
+    interview = db.first(client.table("upcoming_interviews").select("id,started_at,updated_by").eq("id", payload.interviewId).limit(1).execute())
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
+    actor_id = room_actor_id(user, interview.get("updated_by"))
     client.table("upcoming_interviews").update(
         {
             "status": "in_progress",
             "session_id": payload.sessionId,
             "started_at": interview.get("started_at") or now,
-            "updated_by": user["id"],
+            "updated_by": actor_id,
         }
     ).eq("id", payload.interviewId).execute()
 
-    existing_ai_turns = db.many(
-        client.table("interview_turns")
-        .select("id,content,metadata")
-        .eq("session_id", payload.sessionId)
-        .eq("speaker", "ai")
-        .execute()
-    )
-    reusable_ai_turn = next(
-        (
-            turn
-            for turn in existing_ai_turns
-            if normalize_text(turn.get("content")) and not is_agent_system_error_message(turn.get("content"))
-        ),
-        None,
-    )
-    first_question = normalize_text(reusable_ai_turn.get("content")) if reusable_ai_turn else None
-    if not reusable_ai_turn and opening_message and not is_agent_system_error_message(opening_message):
+    first_question = None
+    if opening_message and not is_agent_system_error_message(opening_message):
         first_planned_question = ((agent_response.get("interview_plan") or {}).get("questions") or [{}])[0]
         client.table("interview_turns").insert(
             {
@@ -4361,7 +5389,7 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
                     "source": "agent",
                     "step": 1,
                 },
-                "created_by": user["id"],
+                "created_by": actor_id,
             }
         ).execute()
         first_question = opening_message
@@ -4379,18 +5407,21 @@ def start_interview(payload: StartInterviewPayload, authorization: str | None = 
 
 @app.post("/api/interviews/turn")
 def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, None)
     client = db.get_client()
 
     session = db.first(
         client.table("interview_sessions")
-        .select("id,status,started_at,candidate_id,position_id,question_plan")
+        .select("id,interview_id,status,started_at,candidate_id,position_id,question_plan,created_by")
         .eq("id", payload.sessionId)
         .limit(1)
         .execute()
     )
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    room_interview_id = normalize_text(user.get("room_interview_id"))
+    if room_interview_id and room_interview_id != normalize_text(session.get("interview_id")):
+        raise HTTPException(status_code=403, detail="Room access token mismatch")
     if normalize_text(session.get("status")) not in {"running", "ready"}:
         raise HTTPException(status_code=400, detail=f"Session status {session.get('status')} does not accept turns")
 
@@ -4410,30 +5441,92 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
             .order("turn_no")
             .execute()
         )
-        asked_question_count = len(
-            [
-                turn
-                for turn in all_turns
-                if turn.get("speaker") == "ai"
-                and isinstance(turn.get("metadata"), dict)
-                and normalize_text(turn["metadata"].get("kind")) == "question"
-            ]
+        asked_question_count = count_asked_main_questions(all_turns)
+        question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
+        remaining_planned_question = next_planned_question(question_plan, asked_question_count)
+        latest_ai_turn = next((turn for turn in reversed(all_turns) if turn.get("speaker") == "ai"), None)
+        latest_ai_metadata = latest_ai_turn.get("metadata") if isinstance(latest_ai_turn, dict) and isinstance(latest_ai_turn.get("metadata"), dict) else {}
+        latest_ai_next_nodes = latest_ai_metadata.get("next_nodes") if isinstance(latest_ai_metadata.get("next_nodes"), list) else []
+        local_plan_mode = (
+            "local_question_plan" in latest_ai_next_nodes
+            or normalize_text(latest_ai_metadata.get("source")) == "saved_question_plan"
+            or bool(latest_ai_metadata.get("recovered_from_early_agent_finish"))
         )
 
-        agent_response = normalize_agent_runtime_response(agent_fetch(
-            "/agent/answer",
-            {
-                "session_id": payload.sessionId,
-                "user_answer": payload.content.strip(),
-            },
-        ))
+        if local_plan_mode:
+            if remaining_planned_question:
+                next_count, _question, prompt = remaining_planned_question
+                agent_response = {
+                    "status": "local_plan_continue",
+                    "message": prompt,
+                    "state_snapshot": {
+                        "asked_question_count": next_count,
+                        "answer_count": 0,
+                        "next_nodes": ["local_question_plan"],
+                    },
+                }
+            else:
+                agent_response = {
+                    "status": "local_plan_done",
+                    "message": "已完成全部题目，请点击提交生成评分报告。",
+                    "state_snapshot": {
+                        "asked_question_count": asked_question_count,
+                        "answer_count": 0,
+                        "next_nodes": [],
+                    },
+                }
+        else:
+            try:
+                agent_response = normalize_agent_runtime_response(agent_fetch(
+                    "/agent/answer",
+                    {
+                        "session_id": payload.sessionId,
+                        "user_answer": payload.content.strip(),
+                    },
+                ))
+            except HTTPException as exc:
+                detail = normalize_text(exc.detail)
+                if remaining_planned_question and (
+                    "waiting for human review" in detail.lower()
+                    or "not waiting for a candidate answer" in detail.lower()
+                    or "session is not waiting" in detail.lower()
+                ):
+                    next_count, _question, prompt = remaining_planned_question
+                    agent_response = {
+                        "status": "local_plan_continue",
+                        "message": prompt,
+                        "state_snapshot": {
+                            "asked_question_count": next_count,
+                            "answer_count": 0,
+                            "next_nodes": ["local_question_plan"],
+                        },
+                    }
+                else:
+                    raise
+
         agent_status = normalize_text(agent_response.get("status")).lower()
         agent_message = normalize_text(agent_response.get("message"))
         if agent_status == "error" or is_agent_system_error_message(agent_message):
             detail = normalize_text(agent_response.get("message"))
             metadata = agent_response.get("metadata") if isinstance(agent_response.get("metadata"), dict) else {}
             detail = detail or normalize_text(metadata.get("error")) or "Agent rejected the candidate answer."
-            raise HTTPException(status_code=409, detail=detail)
+            if remaining_planned_question and (
+                "waiting for human review" in detail.lower()
+                or "not waiting for a candidate answer" in detail.lower()
+                or "session is not waiting" in detail.lower()
+            ):
+                next_count, _question, prompt = remaining_planned_question
+                agent_response = {
+                    "status": "local_plan_continue",
+                    "message": prompt,
+                    "state_snapshot": {
+                        "asked_question_count": next_count,
+                        "answer_count": 0,
+                        "next_nodes": ["local_question_plan"],
+                    },
+                }
+            else:
+                raise HTTPException(status_code=409, detail=detail)
 
     inserted_turn = db.first(
         client.table("interview_turns")
@@ -4445,7 +5538,7 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
                 "content": payload.content.strip(),
                 "input_mode": payload.inputMode,
                 "metadata": payload.metadata or {},
-                "created_by": user["id"],
+                "created_by": room_actor_id(user, session.get("created_by")),
             }
         )
         .execute()
@@ -4463,8 +5556,15 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
         if agent_status in {"wait_for_review", "finish"}:
             ai_prompt = ai_prompt or "The structured interview is complete. Scoring will start next."
             ai_kind = "closing"
+        if agent_status == "local_plan_done":
+            ai_kind = "closing"
 
         question_plan = session.get("question_plan") if isinstance(session.get("question_plan"), list) else []
+        if asked_question_count < len(question_plan) and agent_status in {"wait_for_review", "finish", "local_plan_continue"}:
+            planned = next_planned_question(question_plan, asked_question_count)
+            if planned:
+                current_asked_count, _planned_question, ai_prompt = planned
+                ai_kind = "question"
         current_question_plan = (
             question_plan[current_asked_count - 1]
             if ai_kind == "question" and current_asked_count > 0 and current_asked_count - 1 < len(question_plan)
@@ -4490,7 +5590,7 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
                             "next_nodes": ((agent_response.get("state_snapshot") or {}).get("next_nodes") or []),
                             "answer_guidance": answer_guidance,
                         },
-                        "created_by": user["id"],
+                        "created_by": room_actor_id(user, session.get("created_by")),
                     }
                 )
                 .execute()
@@ -4515,16 +5615,34 @@ def append_turn(payload: AppendTurnPayload, authorization: str | None = Header(d
 
 @app.post("/api/interviews/finish")
 def finish_interview(payload: FinishInterviewPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, payload.interviewId)
     client = db.get_client()
 
     session = db.first(
-        client.table("interview_sessions").select("id,interview_id,status").eq("id", payload.sessionId).limit(1).execute()
+        client.table("interview_sessions").select("id,interview_id,status,created_by").eq("id", payload.sessionId).limit(1).execute()
     )
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if str(session.get("interview_id")) != payload.interviewId:
         raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    planned_session = db.first(
+        client.table("interview_sessions").select("question_plan").eq("id", payload.sessionId).limit(1).execute()
+    )
+    question_plan = planned_session.get("question_plan") if isinstance(planned_session, dict) and isinstance(planned_session.get("question_plan"), list) else []
+    if question_plan:
+        existing_turns = db.many(
+            client.table("interview_turns")
+            .select("id,speaker,metadata")
+            .eq("session_id", payload.sessionId)
+            .execute()
+        )
+        asked_main_questions = count_asked_main_questions(existing_turns)
+        if asked_main_questions < len(question_plan):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Interview still has remaining planned questions ({asked_main_questions}/{len(question_plan)} answered).",
+            )
 
     agent_status = normalize_agent_runtime_response(agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET"))
     state_snapshot = agent_status.get("state_snapshot") if isinstance(agent_status.get("state_snapshot"), dict) else {}
@@ -4571,7 +5689,7 @@ def finish_interview(payload: FinishInterviewPayload, authorization: str | None 
             "status": "completed",
             "ended_at": now,
             "session_id": payload.sessionId,
-            "updated_by": user["id"],
+            "updated_by": room_actor_id(user, session.get("created_by")),
         }
     ).eq("id", payload.interviewId).execute()
 
@@ -4623,12 +5741,12 @@ def record_proctoring_events(
     payload: RecordProctoringEventsPayload,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, payload.interviewId)
     client = db.get_client()
 
     session = db.first(
         client.table("interview_sessions")
-        .select("id,interview_id")
+        .select("id,interview_id,created_by")
         .eq("id", payload.sessionId)
         .limit(1)
         .execute()
@@ -4639,7 +5757,7 @@ def record_proctoring_events(
         raise HTTPException(status_code=400, detail="Session and interview mismatch")
 
     rows = [
-        normalize_proctoring_event(event, payload.interviewId, payload.sessionId, user["id"])
+        normalize_proctoring_event(event, payload.interviewId, payload.sessionId, room_actor_id(user, session.get("created_by")))
         for event in payload.events[:20]
     ]
     inserted_count = 0
@@ -4657,16 +5775,34 @@ def record_proctoring_events(
 
 @app.post("/api/interviews/score")
 def score_interview(payload: ScoreInterviewPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = require_user(authorization)
+    user = require_user_or_room(authorization, payload.accessToken, payload.interviewId)
     client = db.get_client()
 
     session = db.first(
-        client.table("interview_sessions").select("id,interview_id,candidate_id,status").eq("id", payload.sessionId).limit(1).execute()
+        client.table("interview_sessions").select("id,interview_id,candidate_id,status,created_by").eq("id", payload.sessionId).limit(1).execute()
     )
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if str(session.get("interview_id")) != payload.interviewId:
         raise HTTPException(status_code=400, detail="Session and interview mismatch")
+
+    planned_session = db.first(
+        client.table("interview_sessions").select("question_plan").eq("id", payload.sessionId).limit(1).execute()
+    )
+    question_plan = planned_session.get("question_plan") if isinstance(planned_session, dict) and isinstance(planned_session.get("question_plan"), list) else []
+    if question_plan:
+        existing_turns = db.many(
+            client.table("interview_turns")
+            .select("id,speaker,metadata")
+            .eq("session_id", payload.sessionId)
+            .execute()
+        )
+        asked_main_questions = count_asked_main_questions(existing_turns)
+        if asked_main_questions < len(question_plan):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Interview still has remaining planned questions ({asked_main_questions}/{len(question_plan)} answered).",
+            )
 
     agent_status = agent_fetch(f"/agent/status?session_id={payload.sessionId}", method="GET")
     response_payload = agent_status.get("response") if isinstance(agent_status.get("response"), dict) else {}
@@ -4706,6 +5842,7 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
         .execute()
     )
     mapped = merge_proctoring_into_report(mapped, build_proctoring_summary(proctoring_events))
+    actor_id = room_actor_id(user, session.get("created_by"))
     report = db.first(
         client.table("interview_reports")
         .upsert(
@@ -4721,7 +5858,7 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
                 "evidence": mapped["evidence"],
                 "summary": mapped["summary"],
                 "risk_score": mapped["risk_score"],
-                "generated_by": user["id"],
+                "generated_by": actor_id,
                 "updated_at": now_iso(),
             },
             on_conflict="session_id",
@@ -4736,7 +5873,7 @@ def score_interview(payload: ScoreInterviewPayload, authorization: str | None = 
             "status": "completed",
             "ai_report_id": report.get("id") if report else None,
             "ended_at": now,
-            "updated_by": user["id"],
+            "updated_by": actor_id,
         }
     ).eq("id", payload.interviewId).execute()
 
@@ -4824,22 +5961,59 @@ def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def parse_iso_timestamp(value: Any) -> float | None:
+    raw = normalize_text(value)
+    if not raw:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def room_access_expires_at(interview: dict[str, Any]) -> int:
+    ended_at = parse_iso_timestamp(interview.get("ended_at"))
+    if ended_at is not None:
+        return int(ended_at + 72 * 60 * 60)
+    return int(time.time()) + 12 * 60 * 60
+
+
+def is_room_access_expired(interview: dict[str, Any]) -> bool:
+    ended_at = parse_iso_timestamp(interview.get("ended_at"))
+    return ended_at is not None and time.time() > ended_at + 72 * 60 * 60
+
+
 @app.post("/api/interviews/room-password")
 def room_password(payload: RoomPasswordPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     client = db.get_client()
 
     if payload.action == "issue":
         user = require_user(authorization)
-        password = random_password(8)
-        salt = secrets.token_hex(16)
+        interview_actor_id = normalize_text(user.get("id")) or None
+        interview = db.first(
+            client.table("upcoming_interviews")
+            .select("id,room_password,room_password_hash,room_password_salt,room_password_set_at,ended_at")
+            .eq("id", payload.interviewId)
+            .limit(1)
+            .execute()
+        )
+        if not interview:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        if is_room_access_expired(interview):
+            raise HTTPException(status_code=410, detail="Interview room link expired")
+
+        password = normalize_text(interview.get("room_password")) or random_password(8)
+        salt = normalize_text(interview.get("room_password_salt")) or secrets.token_hex(16)
         password_hash = sha256_hex(f"{password}:{salt}")
         client.table("upcoming_interviews").update(
             {
-                "room_password": None,
+                "room_password": password,
                 "room_password_hash": password_hash,
                 "room_password_salt": salt,
-                "room_password_set_at": now_iso(),
-                "updated_by": user["id"],
+                "room_password_set_at": interview.get("room_password_set_at") or now_iso(),
+                "updated_by": interview_actor_id,
             }
         ).eq("id", payload.interviewId).execute()
         return {"ok": True, "interview_id": payload.interviewId, "password": password}
@@ -4847,26 +6021,46 @@ def room_password(payload: RoomPasswordPayload, authorization: str | None = Head
     if payload.action == "verify":
         interview = db.first(
             client.table("upcoming_interviews")
-            .select("id,room_password_hash,room_password_salt,room_password_set_at")
+            .select("id,room_password,room_password_hash,room_password_salt,room_password_set_at,ended_at")
             .eq("id", payload.interviewId)
             .limit(1)
             .execute()
         )
         if not interview:
             raise HTTPException(status_code=404, detail="Interview not found")
+        if is_room_access_expired(interview):
+            raise HTTPException(status_code=410, detail="Interview room link expired")
 
+        plain_password = normalize_text(interview.get("room_password"))
         password_hash = normalize_text(interview.get("room_password_hash"))
         salt = normalize_text(interview.get("room_password_salt"))
-        requires_password = bool(normalize_text(interview.get("room_password_set_at")) or password_hash)
+        requires_password = bool(normalize_text(interview.get("room_password_set_at")) or password_hash or plain_password)
+        access_expires_at = room_access_expires_at(interview)
 
         if not requires_password:
-            return {"ok": True, "interview_id": payload.interviewId, "requires_password": False, "verified": True}
+            return {
+                "ok": True,
+                "interview_id": payload.interviewId,
+                "requires_password": False,
+                "verified": True,
+                "accessToken": issue_room_access_token(payload.interviewId, access_expires_at),
+            }
 
         input_password = normalize_text(payload.password)
         if not input_password:
             return {"ok": True, "interview_id": payload.interviewId, "requires_password": True, "verified": False}
 
-        verified = hmac.compare_digest(sha256_hex(f"{input_password}:{salt}"), password_hash)
-        return {"ok": True, "interview_id": payload.interviewId, "requires_password": True, "verified": verified}
+        verified = False
+        if plain_password:
+            verified = hmac.compare_digest(input_password, plain_password)
+        elif password_hash and salt:
+            verified = hmac.compare_digest(sha256_hex(f"{input_password}:{salt}"), password_hash)
+        return {
+            "ok": True,
+            "interview_id": payload.interviewId,
+            "requires_password": True,
+            "verified": verified,
+            "accessToken": issue_room_access_token(payload.interviewId, access_expires_at) if verified else None,
+        }
 
     raise HTTPException(status_code=400, detail="Unsupported action")

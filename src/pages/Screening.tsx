@@ -149,6 +149,9 @@ const humanizeUploadError = (message: string | null, code: string | null): strin
     return '文件过大，超出系统允许的上传大小';
   }
   if (normalized.includes('schema cache')) {
+    if (normalized.includes('recommendation_label')) {
+      return '历史失败任务：匹配结果字段已修复，请删除后重新上传';
+    }
     return '系统数据库结构与当前版本不一致，请先同步数据库迁移';
   }
   if (normalized.includes('relation') && normalized.includes('does not exist')) {
@@ -193,7 +196,7 @@ export default function Screening() {
   const [stage, setStage] = useState<PipelineProgressStage>('uploaded');
   const [stageMessage, setStageMessage] = useState('等待上传简历');
   const [pipelineError, setPipelineError] = useState<string | null>(null);
-  const [selectedFailedUploadIds, setSelectedFailedUploadIds] = useState<string[]>([]);
+  const [selectedUploadIds, setSelectedUploadIds] = useState<string[]>([]);
   const [isDeletingUploads, setIsDeletingUploads] = useState(false);
   const [taskListMode, setTaskListMode] = useState<'focused' | 'all'>('focused');
   const [batchItems, setBatchItems] = useState<BatchUploadItem[]>([]);
@@ -331,12 +334,8 @@ export default function Screening() {
   }, [isRunning, isBatchRunning]);
 
   useEffect(() => {
-    const failedIdSet = new Set(
-      uploads
-        .filter((u) => u.status === 'failed' && u.error_code !== 'USER_CANCELLED')
-        .map((u) => u.id)
-    );
-    setSelectedFailedUploadIds((prev) => prev.filter((id) => failedIdSet.has(id)));
+    const uploadIdSet = new Set(uploads.map((u) => u.id));
+    setSelectedUploadIds((prev) => prev.filter((id) => uploadIdSet.has(id)));
   }, [uploads]);
 
   const resolveCandidateBucket = (candidate: CandidateRow): 'strong' | 'pending' | 'eliminated' => {
@@ -358,7 +357,9 @@ export default function Screening() {
   );
   const visibleUploads = taskListMode === 'focused' ? focusUploads : uploads;
   const hiddenCompletedOrCancelledCount = uploads.length - focusUploads.length;
-  const selectedFailedUploads = failedUploads.filter((u) => selectedFailedUploadIds.includes(u.id));
+  const selectedUploads = uploads.filter((u) => selectedUploadIds.includes(u.id));
+  const visibleUploadIds = visibleUploads.map((u) => u.id);
+  const allVisibleUploadsSelected = visibleUploadIds.length > 0 && visibleUploadIds.every((id) => selectedUploadIds.includes(id));
   const tabCandidates = activeTab === 'strong' ? strongList : activeTab === 'pending' ? pendingList : eliminatedList;
   const displayedCandidates = tabCandidates;
   const buildCandidateDetailQuery = (positionId: string, matchId?: string | null) => {
@@ -739,8 +740,8 @@ export default function Screening() {
     );
   };
 
-  const handleSelectFailedUpload = (uploadId: string, checked: boolean) => {
-    setSelectedFailedUploadIds((prev) => {
+  const handleSelectUpload = (uploadId: string, checked: boolean) => {
+    setSelectedUploadIds((prev) => {
       if (checked) {
         if (prev.includes(uploadId)) return prev;
         return [...prev, uploadId];
@@ -749,11 +750,28 @@ export default function Screening() {
     });
   };
 
-  const handleDeleteSelectedFailedUploads = async () => {
-    if (selectedFailedUploads.length === 0 || isDeletingUploads) return;
+  const handleSelectAllVisibleUploads = () => {
+    setSelectedUploadIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleUploadsSelected) {
+        visibleUploadIds.forEach((id) => next.delete(id));
+      } else {
+        visibleUploadIds.forEach((id) => next.add(id));
+      }
+      return Array.from(next);
+    });
+  };
+
+  const handleSelectFailedUploads = () => {
+    const failedIds = uploads.filter((u) => u.status === 'failed' && !isUploadCancelled(u)).map((u) => u.id);
+    setSelectedUploadIds(failedIds);
+  };
+
+  const handleDeleteSelectedUploads = async () => {
+    if (selectedUploads.length === 0 || isDeletingUploads) return;
 
     const confirmed = window.confirm(
-      `确认删除 ${selectedFailedUploads.length} 条失败任务记录吗？\n此操作不可撤销。`
+      `确认删除 ${selectedUploads.length} 条任务记录吗？\n只删除上传任务记录和对应文件，不会删除已生成的候选人档案。此操作不可撤销。`
     );
     if (!confirmed) return;
 
@@ -761,8 +779,8 @@ export default function Screening() {
     setPipelineError(null);
 
     try {
-      const uploadIds = selectedFailedUploads.map((item) => item.id);
-      const storagePaths = selectedFailedUploads
+      const uploadIds = selectedUploads.map((item) => item.id);
+      const storagePaths = selectedUploads
         .map((item) => item.file_path)
         .filter((path): path is string => Boolean(path && path.trim()));
 
@@ -778,7 +796,7 @@ export default function Screening() {
         throw new Error(error.message);
       }
 
-      setSelectedFailedUploadIds((prev) => prev.filter((id) => !uploadIds.includes(id)));
+      setSelectedUploadIds((prev) => prev.filter((id) => !uploadIds.includes(id)));
       await fetchData();
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
@@ -1151,57 +1169,13 @@ export default function Screening() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest overflow-hidden shadow-sm">
-            <div className="border-b border-outline-variant/10 bg-surface/50 px-5 py-4">
-              <h3 className="text-sm font-medium text-on-surface">任务监控</h3>
-            </div>
-            <div className="space-y-3 p-5 text-sm">
-              <div className="rounded-2xl border border-outline-variant/15 bg-surface px-4 py-3 text-on-surface">
-                当前展示 {visibleUploads.length} 条任务记录
-              </div>
-              <div className="inline-flex items-center rounded-xl border border-outline-variant/20 bg-surface-container-low p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setTaskListMode('focused')}
-                  className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                    taskListMode === 'focused' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  待处理/失败（{focusUploads.length}）
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTaskListMode('all')}
-                  className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                    taskListMode === 'all' ? 'bg-primary/15 text-primary' : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  全部（{uploads.length}）
-                </button>
-              </div>
-              {taskListMode === 'focused' && hiddenCompletedOrCancelledCount > 0 && (
-                <p className="text-xs text-on-surface-variant">已隐藏完成或取消任务 {hiddenCompletedOrCancelledCount} 条</p>
-              )}
-              {selectedFailedUploadIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void handleDeleteSelectedFailedUploads()}
-                  disabled={isDeletingUploads}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-xs font-medium text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {isDeletingUploads ? '删除中...' : `删除选中（${selectedFailedUploadIds.length}）`}
-                </button>
-              )}
-            </div>
-          </div>
         </aside>
       </div>
 
       <div className="bg-surface-container-lowest border border-outline-variant/15 rounded-xl overflow-hidden shadow-sm">
-        <div className="px-6 py-4 border-b border-outline-variant/10 bg-surface/50 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className="px-5 py-3 border-b border-outline-variant/10 bg-surface/50 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="font-medium text-sm text-on-surface">最近处理任务</h3>
+            <h3 className="font-medium text-sm text-on-surface">任务记录</h3>
             <div className="inline-flex items-center rounded-lg border border-outline-variant/20 bg-surface-container-low p-0.5">
               <button
                 type="button"
@@ -1226,35 +1200,53 @@ export default function Screening() {
               <span className="text-xs text-on-surface-variant">已隐藏完成/取消 {hiddenCompletedOrCancelledCount} 条</span>
             )}
           </div>
-          {selectedFailedUploadIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            {visibleUploads.length > 0 && (
+              <button
+                type="button"
+                onClick={handleSelectAllVisibleUploads}
+                className="cursor-pointer inline-flex items-center rounded-md border border-outline-variant/25 bg-white px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container-low"
+              >
+                {allVisibleUploadsSelected ? '取消全选' : '全选当前列表'}
+              </button>
+            )}
+            {failedUploads.filter((u) => !isUploadCancelled(u)).length > 0 && (
+              <button
+                type="button"
+                onClick={handleSelectFailedUploads}
+                className="cursor-pointer inline-flex items-center rounded-md border border-error/25 bg-white px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
+              >
+                只选失败任务
+              </button>
+            )}
+          {selectedUploadIds.length > 0 && (
             <button
               type="button"
-              onClick={() => void handleDeleteSelectedFailedUploads()}
+              onClick={() => void handleDeleteSelectedUploads()}
               disabled={isDeletingUploads}
               className="cursor-pointer inline-flex items-center gap-1.5 rounded-md border border-error/30 bg-error/10 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/15 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              {isDeletingUploads ? '删除中...' : `删除选中（${selectedFailedUploadIds.length}）`}
+              {isDeletingUploads ? '删除中...' : `删除所选任务（${selectedUploadIds.length}）`}
             </button>
           )}
+          </div>
         </div>
         {visibleUploads.length === 0 ? (
-          <div className="p-6 text-sm text-on-surface-variant">暂无任务记录</div>
+          <div className="p-5 text-sm text-on-surface-variant">暂无任务记录</div>
         ) : (
           <div className="divide-y divide-outline-variant/10">
             {visibleUploads.map((u) => (
-              <div key={u.id} className="px-6 py-4 hover:bg-surface-container-low/40 transition-colors">
+              <div key={u.id} className="px-5 py-3 hover:bg-surface-container-low/40 transition-colors">
                 <div className="flex items-start gap-3">
                   <div className="pt-1 w-5">
-                    {u.status === 'failed' && !isUploadCancelled(u) && (
-                      <input
-                        type="checkbox"
-                        checked={selectedFailedUploadIds.includes(u.id)}
-                        onChange={(e) => handleSelectFailedUpload(u.id, e.target.checked)}
-                        className="w-4 h-4 cursor-pointer accent-primary"
-                        aria-label={`选择失败任务 ${u.file_name}`}
-                      />
-                    )}
+                    <input
+                      type="checkbox"
+                      checked={selectedUploadIds.includes(u.id)}
+                      onChange={(e) => handleSelectUpload(u.id, e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-primary"
+                      aria-label={`选择任务 ${u.file_name}`}
+                    />
                   </div>
                   <div className="flex-1 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                     <div>

@@ -729,10 +729,9 @@ export default function InterviewReports() {
     };
   }, [selectedReportView?.id]);
 
-  const deleteSelectedReport = async () => {
-    if (!selectedReport) return;
-    const reportId = selectedReport.report.id;
-    const candidateName = selectedReport.interview?.name ?? '该候选人';
+  const deleteReport = async (target: ReportCard) => {
+    const reportId = target.report.id;
+    const candidateName = target.interview?.name ?? '该候选人';
     const confirmed = window.confirm(`确定删除 ${candidateName} 的面试报告吗？删除后列表中将不再显示这份报告。`);
     if (!confirmed) return;
     setDeletingReportId(reportId);
@@ -745,7 +744,7 @@ export default function InterviewReports() {
         if (deleteError) throw deleteError;
         setReports((current) => current.filter(({ report }) => report.id !== reportId));
       }
-      setSelectedReportId(null);
+      if (selectedReportId === reportId) setSelectedReportId(null);
     } catch (deleteError) {
       setError(toErrorMessage(deleteError, '删除面试报告失败'));
     } finally {
@@ -845,6 +844,7 @@ export default function InterviewReports() {
           <div className="grid gap-4">
             {filteredReports.map(({ report, interview, proctoring }) => {
               const riskTags = getRiskTags(report, proctoring);
+              const reportCard = { report, interview, proctoring };
               return (
                 <article key={report.id} className="rounded-3xl border border-[#c7dbf5] bg-[#fbfdff] p-5 transition hover:border-[#1f5fbf] hover:bg-white">
                   <div className="flex flex-wrap items-start justify-between gap-4">
@@ -897,13 +897,24 @@ export default function InterviewReports() {
                         </span>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedReportId(report.id)}
-                      className="rounded-2xl bg-[#0b63ce] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#084fa8]"
-                    >
-                      查看完整报告
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReportId(report.id)}
+                        className="rounded-2xl bg-[#0b63ce] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#084fa8]"
+                      >
+                        查看完整报告
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteReport(reportCard)}
+                        disabled={deletingReportId === report.id}
+                        className="inline-flex items-center gap-1.5 rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-400 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        {deletingReportId === report.id ? '删除中...' : '删除'}
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
@@ -918,15 +929,6 @@ export default function InterviewReports() {
             <div className="flex items-center justify-between border-b border-[#d8e4f4] bg-[#f7fbff] px-6 py-4">
               <h3 className="font-semibold text-[#16355f]">AI 评分报告 · {selectedReport.interview?.name ?? '未知候选人'}</h3>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void deleteSelectedReport()}
-                  disabled={deletingReportId === selectedReport.report.id}
-                  className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:border-rose-400 disabled:opacity-60"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  删除
-                </button>
                 <button
                   type="button"
                   onClick={() => setSelectedReportId(null)}

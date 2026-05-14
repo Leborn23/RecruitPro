@@ -43,7 +43,7 @@ export default function InterviewInviteModal({ open, candidate, onClose, onSaved
     position: '',
     schedule_time: defaultDatetimeLocal(),
     interviewer: '',
-    location_type: '线上会议（腾讯会议/Zoom）',
+    location_type: 'AI 面试（线上考场）',
   });
 
   const canSubmit = useMemo(() => form.name.trim() && form.position.trim(), [form.name, form.position]);
@@ -57,7 +57,7 @@ export default function InterviewInviteModal({ open, candidate, onClose, onSaved
       position: (candidate?.title || '').trim(),
       schedule_time: defaultDatetimeLocal(),
       interviewer: '',
-      location_type: '线上会议（腾讯会议/Zoom）',
+      location_type: 'AI 面试（线上考场）',
     });
   }, [open, candidate]);
 
