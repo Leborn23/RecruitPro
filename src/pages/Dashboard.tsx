@@ -29,18 +29,21 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
+  const [candidateTotalCount, setCandidateTotalCount] = useState(0);
   const [interviews, setInterviews] = useState<InterviewRow[]>([]);
 
   useEffect(() => {
     const fetchData = async () => {
-      const [posRes, canRes, intRes] = await Promise.all([
+      const [posRes, canRes, candidateCountRes, intRes] = await Promise.all([
         supabase.from('active_positions').select('id,title,department,location,status').order('created_at', { ascending: false }),
         supabase.from('candidates').select('id,name,edu,exp').order('created_at', { ascending: false }).limit(6),
+        supabase.from('candidates').select('id', { count: 'exact', head: true }),
         supabase.from('upcoming_interviews').select('id,name,stage,position').order('created_at', { ascending: false }).limit(8),
       ]);
 
       if (posRes.data) setPositions(posRes.data as PositionRow[]);
       if (canRes.data) setCandidates(canRes.data as CandidateRow[]);
+      setCandidateTotalCount(candidateCountRes.count ?? 0);
       if (intRes.data) setInterviews(intRes.data as InterviewRow[]);
     };
 
@@ -49,9 +52,13 @@ export default function Dashboard() {
 
   const boardStats = {
     positionCount: positions.length,
-    candidateCount: candidates.length,
+    candidateCount: candidateTotalCount,
     interviewCount: interviews.length,
     activePositionCount: positions.filter((item) => String(item.status ?? '').trim().toLowerCase() !== 'closed').length,
+  };
+  const formatCandidateMeta = (candidate: CandidateRow) => {
+    const parts = [candidate.edu, candidate.exp].map((item) => String(item ?? '').trim()).filter(Boolean);
+    return parts.length > 0 ? parts.join(' · ') : '资料待完善';
   };
 
   return (
@@ -88,7 +95,7 @@ export default function Dashboard() {
                 <p className="mt-2 text-3xl font-semibold text-[#16355f]">{boardStats.activePositionCount}</p>
               </div>
               <div className="rounded-[20px] border border-[#d8e4f4] bg-[#f8fbff] p-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">候选人样本</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#6b86a4]">候选人总数</p>
                 <p className="mt-2 text-3xl font-semibold text-[#16355f]">{boardStats.candidateCount}</p>
               </div>
               <div className="rounded-[20px] border border-[#d8e4f4] bg-[#f8fbff] p-4">
@@ -161,7 +168,10 @@ export default function Dashboard() {
 
           <section className="overflow-hidden rounded-[28px] border border-[#cddcf0] bg-white shadow-[0_14px_30px_-28px_rgba(15,23,42,0.1)]">
             <div className="flex items-center justify-between border-b border-[#e4edf8] px-6 py-5">
-              <h3 className="text-lg font-semibold text-[#16355f]">AI 自动筛选候选人</h3>
+              <div>
+                <h3 className="text-lg font-semibold text-[#16355f]">最新候选人</h3>
+                <p className="mt-1 text-xs text-[#6b86a4]">最近进入候选人库的简历，可进入详情查看匹配结果。</p>
+              </div>
               <button
                 onClick={() => navigate('/candidates')}
                 className="text-sm font-medium text-[#355b87] transition hover:text-[#16355f] flex items-center gap-1 cursor-pointer"
@@ -173,33 +183,23 @@ export default function Dashboard() {
             {candidates.length === 0 ? (
               <div className="p-6 text-sm text-[#5d7896]">暂无候选人数据。</div>
             ) : (
-              <div className="space-y-3 p-4 sm:p-5">
+              <div className="divide-y divide-[#edf3fa]">
                 {candidates.map((candidate) => (
                   <div
                     key={candidate.id}
                     onClick={() => navigate(`/candidates/${candidate.id}`)}
-                    className="rounded-[20px] border border-[#dde8f5] bg-[#fbfdff] p-4 flex items-center justify-between hover:border-[#aac6ea] hover:bg-white transition-colors group cursor-pointer"
+                    className="flex cursor-pointer items-center justify-between gap-4 px-6 py-4 transition-colors hover:bg-[#f8fbff]"
                   >
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-full border border-[#d6e2f1] bg-[#f4f8ff] flex items-center justify-center text-[#1f5fbf] font-medium">
+                    <div className="flex min-w-0 items-center gap-4">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#d6e2f1] bg-[#f4f8ff] font-medium text-[#1f5fbf]">
                         {candidate.name?.charAt(0) || '?'}
                       </div>
-                      <div>
-                        <h4 className="font-medium text-[15px] text-[#16355f]">{candidate.name}</h4>
-                        <p className="text-xs text-[#5d7896] mt-0.5">
-                          {(candidate.edu || '学历未知') + ' · ' + (candidate.exp || '经验未知')}
-                        </p>
+                      <div className="min-w-0">
+                        <h4 className="truncate text-[15px] font-medium text-[#16355f]">{candidate.name || '未命名候选人'}</h4>
+                        <p className="mt-0.5 truncate text-xs text-[#5d7896]">{formatCandidateMeta(candidate)}</p>
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(`/candidates/${candidate.id}`);
-                      }}
-                      className="text-[#1f5fbf] border border-[#c7daf6] bg-[#f4f8ff] hover:bg-[#eef5ff] px-4 py-1.5 rounded-xl text-sm font-medium transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
-                    >
-                      查看详情
-                    </button>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-[#8aa2bd]" />
                   </div>
                 ))}
               </div>
@@ -253,7 +253,7 @@ export default function Dashboard() {
               <h3 className="text-lg font-semibold text-[#16355f]">处理建议</h3>
             </div>
             <p className="text-sm text-[#5d7896] leading-relaxed">
-              当前系统为纯 AI 自动筛选。建议优先完善岗位结构化要求和简历文本提取质量，以提升匹配准确率。
+              优先查看新入库候选人的匹配结果。若出现“资料待完善”，建议先补齐简历解析信息，再进入面试安排。
             </p>
           </section>
         </div>

@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { useCallback } from 'react';
 import { type InterviewReportRow } from '../lib/interviewRuntime';
 import { getInterviewDurationMinutesForQuestionCount } from '../lib/interviewDuration';
 import { DEFAULT_INTERVIEW_QUESTION_COUNT, normalizeInterviewQuestionCount } from '../lib/interviewQuestionCount';
@@ -696,7 +697,7 @@ export default function Interviews() {
     return l.includes('会议') || l.includes('云端') || l.includes('线上') || l.includes('白板') || l.includes('remote') || l.includes('zoom') || l.includes('meet');
   };
 
-  const fetchReportsForInterviews = async (rows: InterviewRow[]) => {
+  const fetchReportsForInterviews = useCallback(async (rows: InterviewRow[]) => {
     if (rows.length === 0) {
       setReportByInterviewId({});
       return;
@@ -724,9 +725,9 @@ export default function Interviews() {
     }
 
     setReportByInterviewId(nextMap);
-  };
+  }, []);
 
-  const fetchInterviews = async () => {
+  const fetchInterviews = useCallback(async () => {
     const { data: settingsData } = await supabase
       .from('company_settings')
       .select('interview_question_count')
@@ -740,9 +741,9 @@ export default function Interviews() {
     const rows = (data ?? []) as InterviewRow[];
     setInterviews(rows);
     await fetchReportsForInterviews(rows);
-  };
+  }, [fetchReportsForInterviews]);
 
-  const fetchModalOptions = async () => {
+  const fetchModalOptions = useCallback(async () => {
     const [{ data: candidateData }, { data: positionData }] = await Promise.all([
       supabase.from('candidates').select('id,name,title,p_id').order('created_at', { ascending: false }),
       supabase.from('active_positions').select('id,title,location').order('created_at', { ascending: false }),
@@ -768,7 +769,7 @@ export default function Interviews() {
         }))
         .filter((item) => item.id && item.title)
     );
-  };
+  }, []);
 
   const handleOpenRoomPage = (interview: InterviewRow) => {
     navigate(buildInterviewRoomPath(interview.id));
@@ -834,7 +835,7 @@ export default function Interviews() {
   useEffect(() => {
     void fetchInterviews();
     void fetchModalOptions();
-  }, []);
+  }, [fetchInterviews, fetchModalOptions]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 30_000);

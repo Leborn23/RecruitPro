@@ -405,6 +405,8 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
   const activeEventsRef = useRef(new Map<ProctoringEventType, ActiveTimedEvent>());
   const pendingEventsRef = useRef<ProctoringEventInput[]>([]);
   const pollTimerRef = useRef<number | null>(null);
+  const startRef = useRef<(options?: { assumeConsent?: boolean }) => Promise<void>>(async () => {});
+  const stopRuntimeRef = useRef<(shouldFlush: boolean) => Promise<void>>(async () => {});
   const pollingRef = useRef(false);
   const flushingRef = useRef(false);
   const flushAgainRef = useRef(false);
@@ -1223,9 +1225,12 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
           snapshot_paths: [],
           metadata: { error: message },
         });
-        await flushEvents();
-      }
+      await flushEvents();
     }
+  }
+
+  startRef.current = start;
+  stopRuntimeRef.current = stopRuntime;
   }
 
   async function stop(): Promise<void> {
@@ -1249,7 +1254,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
   useEffect(() => {
     if (!enabled) {
-      void stopRuntime(true);
+      void stopRuntimeRef.current(true);
     }
   }, [enabled]);
 
@@ -1258,7 +1263,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     const timer = window.setTimeout(() => {
       if (!enabledRef.current || !sessionIdRef.current || !consentedRef.current || !stoppedRef.current) return;
-      void start();
+      void startRef.current();
     }, 150);
 
     return () => window.clearTimeout(timer);
@@ -1287,7 +1292,7 @@ export function useInterviewProctoring(params: UseInterviewProctoringParams): Us
 
     return () => {
       mountedRef.current = false;
-      void stopRuntime(true);
+      void stopRuntimeRef.current(true);
     };
   }, []);
 

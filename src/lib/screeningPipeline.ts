@@ -1364,10 +1364,15 @@ function looksLikeContainerNoise(text: string, extension: string): boolean {
 }
 
 function normalizeNaturalText(raw: string): string {
-  return raw
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const withoutControlChars = Array.from(raw, (char) => {
+    const code = char.charCodeAt(0);
+    if (code <= 0x1f && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+      return ' ';
+    }
+    return char;
+  }).join('');
+
+  return withoutControlChars.replace(/\s+/g, ' ').trim();
 }
 
 async function extractPdfTextWithPdfJs(file: File): Promise<string | null> {
@@ -1659,6 +1664,51 @@ function parseWorkExperience(text: string): Array<Record<string, unknown>> {
     end_year: m[3],
     confidence: 0.61
   }));
+}
+
+function inferAgeFromText(text: string): number | null {
+  const normalized = normalizeNaturalText(text);
+  const explicit = normalized.match(/(?:年龄|Age)[:：\s]*([1-5]\d)\s*(?:岁|Y|y)?/i) ?? normalized.match(/([1-5]\d)\s*岁/);
+  if (explicit) return Number(explicit[1]);
+  const birth = normalized.match(/(?:出生|出生日期|生日|出生年月|Birth)[:：\s]*(19[6-9]\d|20[0-1]\d)/i);
+  if (!birth) return null;
+  const age = new Date().getFullYear() - Number(birth[1]);
+  return age >= 16 && age <= 60 ? age : null;
+}
+
+function inferExperienceYearsFromText(text: string): number | null {
+  const normalized = normalizeNaturalText(text);
+  const explicit = normalized.match(/(\d{1,2})\s*(?:年|years?)\s*(?:工作|经验|开发|研发|experience)/i);
+  if (explicit) return Number(explicit[1]);
+  const ranges = [...normalized.matchAll(/(20\d{2})(?:[./年-]\s*(0?[1-9]|1[0-2])\s*月?)?\s*(?:-|至|到|~|—|–)\s*(20\d{2}|至今|今|present)(?:[./年-]\s*(0?[1-9]|1[0-2])\s*月?)?/gi)]
+    .map((m) => {
+      const start = Number(m[1]);
+      const end = /\d{4}/.test(m[3]) ? Number(m[3]) : new Date().getFullYear();
+      return { start, end: Math.min(end, new Date().getFullYear()) };
+    })
+    .filter((item) => item.start >= 1990 && item.start <= item.end);
+  if (ranges.length === 0) return null;
+  return Math.max(0, Math.max(...ranges.map((item) => item.end)) - Math.min(...ranges.map((item) => item.start)));
+}
+
+function inferCityFromText(text: string): string | null {
+  const normalized = normalizeNaturalText(text);
+  const cities = ['北京', '上海', '深圳', '广州', '杭州', '南京', '苏州', '成都', '武汉', '西安', '重庆', '天津', '长沙', '郑州', '青岛', '厦门', '合肥', '宁波', '无锡', '福州', '济南', '大连', '沈阳'];
+  const labeled = normalized.match(/(?:现居|所在地|所在城市|城市|地址|期望城市)[:：\s]*([\u4e00-\u9fa5]{2,8})/);
+  if (labeled) {
+    const city = cities.find((item) => labeled[1].includes(item));
+    if (city) return city;
+  }
+  return cities.find((item) => normalized.includes(item)) ?? null;
+}
+
+function inferCompanyFromText(text: string): string | null {
+  const normalized = normalizeNaturalText(text);
+  const direct = normalized.match(/([\u4e00-\u9fa5A-Za-z0-9（）()·&.-]{2,40}(?:公司|集团|科技|实验室|研究院|医院|中心))/);
+  if (!direct) return null;
+  const value = direct[1].trim();
+  if (/大学|学院|学校/.test(value)) return null;
+  return value.slice(0, 40);
 }
 
 function buildRiskFlags(profile: ResumeProfilePayload, textQuality: 'good' | 'poor'): Array<Record<string, unknown>> {
@@ -2623,11 +2673,18 @@ export async function runPhase1ResumePipeline(
 
     const candidateName = profilePayload.basic_profile.full_name || file.name.replace(/\.(pdf|doc|docx)$/i, '') || '未命名候选人';
     const primaryEdu = (profilePayload.education[0]?.degree as string | undefined) ?? null;
+    const primarySchool =
+      cleanText(profilePayload.education[0]?.school) ??
+      cleanText(profilePayload.education[0]?.university) ??
+      cleanText(profilePayload.education[0]?.institution);
     const candidateTitle = cleanText(profilePayload.basic_profile.current_title) ?? cleanText(position.title) ?? '未知职位';
-    const expYears = profilePayload.basic_profile.years_of_experience;
+    const expYears = profilePayload.basic_profile.years_of_experience ?? inferExperienceYearsFromText(text);
     const candidateExpYears = typeof expYears === 'number' && Number.isFinite(expYears) && expYears >= 0 ? Math.round(expYears) : null;
     const candidateExp = typeof expYears === 'number' && Number.isFinite(expYears) && expYears >= 0 ? `${expYears}年经验` : '经验未明确';
-    const candidateEdu = cleanText(primaryEdu) ?? '学历未明确';
+    const candidateEdu = [cleanText(primaryEdu), primarySchool].filter(Boolean).join(' / ') || '学历未明确';
+    const candidateAge = inferAgeFromText(text);
+    const candidateCity = inferCityFromText(text);
+    const candidateCompany = inferCompanyFromText(text);
     const candidateMatch =
       typeof matchOutput.overall_score === 'number' && Number.isFinite(matchOutput.overall_score)
         ? Math.max(0, Math.min(100, Math.round(matchOutput.overall_score)))
@@ -2641,10 +2698,11 @@ export async function runPhase1ResumePipeline(
       exp: candidateExp,
       exp_years: candidateExpYears,
       edu: candidateEdu,
-      edu_level: candidateEdu,
-      age: null,
+      edu_level: cleanText(primaryEdu) ?? '学历未明确',
+      age: candidateAge,
+      city: candidateCity,
       match: candidateMatch,
-      prev_company: null,
+      prev_company: candidateCompany,
       tag: recommendationToTag(matchOutput.recommendation),
       highlight: matchOutput.summary_reason
     };

@@ -20,7 +20,7 @@ assert.deepEqual(
   ['deepseek-chat', 'deepseek-reasoner']
 );
 
-let requestedUrls: string[] = [];
+const requestedUrls: string[] = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (url: RequestInfo | URL) => {
   requestedUrls.push(String(url));

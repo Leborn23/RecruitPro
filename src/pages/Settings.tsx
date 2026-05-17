@@ -5,6 +5,8 @@ import { MessageSquareText, SlidersHorizontal } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { SettingsCenterContextValue } from './settings/context';
 
+type SettingsRecord = Record<string, unknown> & { id?: string };
+
 type SettingsNavItem = {
   key: string;
   label: string;
@@ -18,7 +20,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
 ];
 
 export default function SettingsCenter() {
-  const [settings, setSettings] = useState<any>(null);
+  const [settings, setSettings] = useState<SettingsRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
 
@@ -42,7 +44,7 @@ export default function SettingsCenter() {
     if (!settings?.id) return;
     const settingsId = settings.id as string;
     setSyncError(null);
-    setSettings((prev: any) => (prev ? { ...prev, [field]: value } : prev));
+    setSettings((prev) => (prev ? { ...prev, [field]: value } : prev));
 
     const { error } = await supabase.from('company_settings').update({ [field]: value }).eq('id', settingsId);
 
@@ -57,7 +59,7 @@ export default function SettingsCenter() {
     if (!settings?.id) return;
     const settingsId = settings.id as string;
     setSyncError(null);
-    setSettings((prev: any) => (prev ? { ...prev, ...patch } : prev));
+    setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
 
     const { error } = await supabase.from('company_settings').update(patch).eq('id', settingsId);
 

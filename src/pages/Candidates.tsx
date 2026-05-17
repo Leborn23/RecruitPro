@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Filter, Loader2, Search, Trash2, UserRound, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import InterviewInviteModal from '../components/interviews/InterviewInviteModal';
@@ -50,9 +50,9 @@ const matchTone = (score: number) => {
 
 const buildCandidateSummary = (candidate: CandidateListRow) => {
   const parts = [
-    `${candidate.exp_years ?? '-'} 年经验`,
+    candidate.exp_years != null ? `${candidate.exp_years} 年经验` : '经验待确认',
     candidate.edu_level || candidate.edu || '学历未知',
-    `${candidate.age ?? '-'} 岁`,
+    candidate.age != null ? `${candidate.age} 岁` : '年龄待确认',
   ];
   if (candidate.city?.trim()) parts.push(candidate.city.trim());
   return parts.join(' · ');

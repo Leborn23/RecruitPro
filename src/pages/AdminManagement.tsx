@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Shield, User, Check, X, AlertTriangle, RefreshCcw, Crown, Search } from 'lucide-react';
 
@@ -74,32 +75,35 @@ export default function AdminManagement() {
     return raw;
   };
 
-  const deriveUsernameFromEmail = (email?: string | null) => {
+  const deriveUsernameFromEmail = useCallback((email?: string | null) => {
     const value = (email ?? '').trim();
     if (!value) return '未命名用户';
     return value.split('@')[0] || '未命名用户';
-  };
+  }, []);
 
-  const deriveUsernameFromCurrentUser = () => {
+  const deriveUsernameFromCurrentUser = useCallback(() => {
     const metadata = (currentUser?.user_metadata ?? {}) as Record<string, unknown>;
     const name = typeof metadata.name === 'string' ? metadata.name.trim() : '';
     const fullName = typeof metadata.full_name === 'string' ? metadata.full_name.trim() : '';
     return name || fullName || deriveUsernameFromEmail(currentUser?.email);
-  };
+  }, [currentUser?.email, currentUser?.user_metadata, deriveUsernameFromEmail]);
 
-  const normalizeUsers = (rows: any[]): UserRole[] =>
-    rows.map((row) => ({
-      id: row.id,
-      username:
-        (typeof row.username === 'string' && row.username.trim()) ||
-        deriveUsernameFromEmail(row.email),
-      email: row.email ?? '',
-      role: (row.role ?? 'user') as UserRole['role'],
-      permissions: Array.isArray(row.permissions) ? row.permissions : [],
-      created_at: row.created_at,
-    }));
+  const normalizeUsers = useCallback(
+    (rows: Array<Record<string, unknown>>): UserRole[] =>
+      rows.map((row) => ({
+        id: String(row.id ?? ''),
+        username:
+          (typeof row.username === 'string' && row.username.trim()) ||
+          deriveUsernameFromEmail(typeof row.email === 'string' ? row.email : null),
+        email: typeof row.email === 'string' ? row.email : '',
+        role: (row.role ?? 'user') as UserRole['role'],
+        permissions: Array.isArray(row.permissions) ? row.permissions : [],
+        created_at: typeof row.created_at === 'string' ? row.created_at : undefined,
+      })),
+    [deriveUsernameFromEmail]
+  );
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     if (!isSuperAdmin) return;
     setLoading(true);
     setFetchError(null);
@@ -144,16 +148,16 @@ export default function AdminManagement() {
       }
     }
     setLoading(false);
-  };
+  }, [currentUser?.email, currentUser?.id, deriveUsernameFromCurrentUser, isSuperAdmin, normalizeUsers, profile]);
 
-  const fetchSuperAdminStatus = async () => {
+  const fetchSuperAdminStatus = useCallback(async () => {
     const { data, error } = await supabase.rpc('has_super_admin');
     if (error) {
       console.error('Error checking super admin status:', error);
       return;
     }
     setHasAnySuperAdmin(Boolean(data));
-  };
+  }, []);
 
   useEffect(() => {
     if (isSuperAdmin) {
@@ -161,7 +165,7 @@ export default function AdminManagement() {
       return;
     }
     fetchSuperAdminStatus().finally(() => setLoading(false));
-  }, [isSuperAdmin]);
+  }, [fetchSuperAdminStatus, fetchUsers, isSuperAdmin]);
 
   const displayedUsers = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();

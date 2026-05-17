@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useCallback } from 'react';
 import { ArrowRight, CheckCircle2, CircleAlert, Eye, Loader2, Target, Trash2, UploadCloud, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { runPhase1ResumePipeline, type ActivePositionRow, type PipelineProgressStage } from '../lib/screeningPipeline';
@@ -219,7 +220,7 @@ export default function Screening() {
     }
   }, [selectedPosition]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     const [posRes, uploadRes] = await Promise.all([
       supabase
         .from('active_positions')
@@ -312,16 +313,16 @@ export default function Screening() {
     }
 
     setAllCandidates(mergedCandidates);
-  };
+  }, [selectedPositionId]);
 
   useEffect(() => {
     void fetchData();
-  }, []);
+  }, [fetchData]);
 
   useEffect(() => {
     if (!selectedPositionId) return;
     void fetchData();
-  }, [selectedPositionId]);
+  }, [fetchData, selectedPositionId]);
 
   useEffect(() => {
     if (!isRunning && !isBatchRunning) return;
@@ -331,7 +332,7 @@ export default function Screening() {
     }, 2500);
 
     return () => clearInterval(timer);
-  }, [isRunning, isBatchRunning]);
+  }, [fetchData, isBatchRunning, isRunning]);
 
   useEffect(() => {
     const uploadIdSet = new Set(uploads.map((u) => u.id));

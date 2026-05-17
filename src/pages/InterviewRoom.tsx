@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useParams } from 'react-router-dom';
+import { useCallback } from 'react';
 import { AlertCircle, AlertTriangle, Camera, CameraOff, CheckCircle2, Info, Play, Send, ShieldCheck, Timer } from 'lucide-react';
 import { useInterviewProctoring } from '../hooks/useInterviewProctoring';
 import { interviewRuntimeEdge, type InterviewTurnRow } from '../lib/interviewRuntime';
@@ -237,7 +238,7 @@ export default function InterviewRoom() {
     return fetchRoomJson<RoomInterviewRow>(`/api/interviews/room/${encodeURIComponent(id)}`);
   };
 
-  const syncTurns = async (sessionId: string, token = roomAccessToken): Promise<RoomMessage[]> => {
+  const syncTurns = useCallback(async (sessionId: string, token = roomAccessToken): Promise<RoomMessage[]> => {
     const data = await fetchRoomJson<{ items?: InterviewTurnRow[]; question_count?: number }>(
       `/api/interviews/room/sessions/${encodeURIComponent(sessionId)}/turns?accessToken=${encodeURIComponent(token)}`
     );
@@ -267,16 +268,16 @@ export default function InterviewRoom() {
     );
     setMessages(nextMessages);
     return nextMessages;
-  };
+  }, [roomAccessToken]);
 
-  const syncTotalQuestionCount = async (sessionId: string, token = roomAccessToken): Promise<number | null> => {
+  const syncTotalQuestionCount = useCallback(async (sessionId: string, token = roomAccessToken): Promise<number | null> => {
     const data = await fetchRoomJson<{ question_count?: number }>(
       `/api/interviews/room/sessions/${encodeURIComponent(sessionId)}/turns?accessToken=${encodeURIComponent(token)}`
     );
     const count = typeof data.question_count === 'number' ? data.question_count : null;
     setTotalQuestionCount(count);
     return count;
-  };
+  }, [roomAccessToken]);
 
   const resolvePositionId = async (candidateId: string): Promise<string | null> => {
     if (candidateId !== interview?.candidate_id) return null;
@@ -325,7 +326,7 @@ export default function InterviewRoom() {
           });
           activeRoomToken = String(tokenResult.accessToken ?? '').trim();
           setRoomAccessToken(activeRoomToken);
-          setAccessGranted(Boolean(activeRoomToken));
+          setAccessGranted(activeRoomToken.length > 0);
         } else {
           const saved = sessionStorage.getItem(getRoomAccessKey(interviewRow.id));
           const savedToken = sessionStorage.getItem(getRoomTokenKey(interviewRow.id)) ?? '';
@@ -336,7 +337,7 @@ export default function InterviewRoom() {
               interviewId: interviewRow.id,
               password: passwordFromUrl
             });
-            if (Boolean(verifyResult.verified)) {
+            if (verifyResult.verified === true) {
               activeRoomToken = String(verifyResult.accessToken ?? '').trim();
               if (activeRoomToken) {
                 sessionStorage.setItem(getRoomAccessKey(interviewRow.id), '1');
@@ -372,7 +373,7 @@ export default function InterviewRoom() {
     return () => {
       cancelled = true;
     };
-  }, [interviewId, passwordFromUrl]);
+  }, [interviewId, passwordFromUrl, syncTotalQuestionCount, syncTurns]);
 
   useEffect(() => {
     if (!interview?.started_at) return;

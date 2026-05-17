@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import smtplib
 import json
 import os
 import secrets
 import re
 import time
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from models import (
     AdminPermissionsPayload,
     AdminRolePayload,
     AppendTurnPayload,
+    AuthEmailPayload,
     CandidateSalaryProfilePatchPayload,
     CompanySettingsPatchPayload,
     CreateInterviewSessionPayload,
@@ -45,12 +48,14 @@ from models import (
     SalaryMarketRefreshPayload,
     ScoreInterviewPayload,
     ScreeningReviewAcknowledgePayload,
+    SignupEmailPayload,
     StartInterviewPayload,
     UpdateInterviewSessionStatusPayload,
     UploadStatePatchPayload,
     UploadTerminalPayload,
     UpsertInterviewReportPayload,
     UpsertInterviewSchedulePayload,
+    VerifyRecoveryCodePayload,
 )
 
 PROCTORING_EVENT_TYPES = {
@@ -86,6 +91,10 @@ PROCTORING_EVENT_LABELS = {
 }
 
 SCREEN_SWITCH_EVENT_TYPES = {"page_hidden", "window_blur"}
+RECOVERY_CODE_TTL_SECONDS = 30 * 60
+AUTH_CODE_MAX_ACTIVE = 5
+SIGNUP_CODE_STORE: dict[str, dict[str, Any]] = {}
+RECOVERY_CODE_STORE: dict[str, dict[str, Any]] = {}
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
@@ -398,6 +407,214 @@ def build_resume_profile_from_text(file_name: str, text: str, quality: str) -> d
     if quality != "good":
         profile["risk_flags"].append({"type": "text_quality", "severity": "medium", "message": "文本质量较弱，建议人工复核"})
     return profile
+
+def _current_year() -> int:
+    return int(time.localtime().tm_year)
+
+
+def infer_age_from_text(text: str) -> int | None:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    explicit = re.search(r"(?:年龄|Age)[:：\s]*([1-5]\d)\s*(?:岁|Y|y)?", normalized)
+    if not explicit:
+        explicit = re.search(r"([1-5]\d)\s*岁", normalized)
+    if explicit:
+        age = int(explicit.group(1))
+        return age if 16 <= age <= 60 else None
+
+    birth = re.search(r"(?:出生|出生日期|生日|出生年月|Birth)[:：\s]*(19[6-9]\d|20[0-1]\d)", normalized, flags=re.IGNORECASE)
+    if birth:
+        age = _current_year() - int(birth.group(1))
+        return age if 16 <= age <= 60 else None
+    return None
+
+
+def _date_ranges_from_text(text: str) -> list[tuple[int, int]]:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    pattern = re.compile(
+        r"(20\d{2})(?:[./年-]\s*(0?[1-9]|1[0-2])\s*月?)?\s*(?:-|至|到|~|—|–)\s*(20\d{2}|至今|今|present|Present|PRESENT)(?:[./年-]\s*(0?[1-9]|1[0-2])\s*月?)?",
+        flags=re.IGNORECASE,
+    )
+    ranges: list[tuple[int, int]] = []
+    now_year = _current_year()
+    for match in pattern.finditer(normalized):
+        start_year = int(match.group(1))
+        end_token = match.group(3)
+        end_year = now_year if not end_token or not end_token.isdigit() else int(end_token)
+        if 1990 <= start_year <= now_year and start_year <= end_year <= now_year + 1:
+            ranges.append((start_year, min(end_year, now_year)))
+    return ranges
+
+
+def infer_experience_years(text: str, profile: dict[str, Any] | None = None) -> int | None:
+    basic = profile.get("basic_profile") if isinstance(profile, dict) and isinstance(profile.get("basic_profile"), dict) else {}
+    value = basic.get("years_of_experience") if isinstance(basic, dict) else None
+    if isinstance(value, (int, float)) and 0 <= value <= 60:
+        return round(value)
+
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    explicit = re.search(r"(\d{1,2})\s*(?:年|years?)\s*(?:工作|经验|开发|研发|experience)", normalized, flags=re.IGNORECASE)
+    if explicit:
+        years = int(explicit.group(1))
+        return years if 0 <= years <= 60 else None
+
+    ranges = _date_ranges_from_text(normalized)
+    if not ranges:
+        return None
+    earliest = min(item[0] for item in ranges)
+    latest = max(item[1] for item in ranges)
+    years = max(0, latest - earliest)
+    return years if 0 <= years <= 60 else None
+
+
+def infer_city_from_text(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    city_names = [
+        "北京", "上海", "深圳", "广州", "杭州", "南京", "苏州", "成都", "武汉", "西安", "重庆", "天津",
+        "长沙", "郑州", "青岛", "厦门", "合肥", "宁波", "无锡", "福州", "济南", "大连", "沈阳",
+    ]
+    labeled = re.search(r"(?:现居|所在地|所在城市|城市|地址|期望城市)[:：\s]*([\u4e00-\u9fa5]{2,8})", normalized)
+    if labeled:
+        for city in city_names:
+            if city in labeled.group(1):
+                return city
+    for city in city_names:
+        if city in normalized:
+            return city
+    return None
+
+
+def infer_company_from_text(text: str, allow_school: bool = True) -> str | None:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    patterns = [
+        r"([\u4e00-\u9fa5A-Za-z0-9（）()·&.\-]{2,40}(?:公司|集团|科技|实验室|研究院|医院|中心))",
+        r"(?:公司|单位|任职于|就职于)[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()·&.\-]{2,40})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        value = match.group(1).strip(" ，,。；;")
+        if not allow_school and re.search(r"大学|学院|学校", value):
+            continue
+        return value[:40]
+    if allow_school:
+        school = re.search(r"([\u4e00-\u9fa5A-Za-z]+(?:大学|学院))", normalized)
+        if school:
+            return school.group(1)
+    return None
+
+
+def parse_work_experience(text: str) -> list[dict[str, Any]]:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(20\d{2}[^。；;\n]{0,160}(?:公司|集团|科技|实验室|研究院|医院|中心)[^。；;\n]{0,120})", normalized):
+        segment = match.group(1)
+        company = infer_company_from_text(segment, allow_school=False)
+        if not company or company in seen:
+            continue
+        seen.add(company)
+        period_match = re.search(r"(20\d{2}[^，,。；;\n]{0,30}(?:至今|今|present|20\d{2}))", segment, flags=re.IGNORECASE)
+        role_match = re.search(r"(算法工程师|机器学习工程师|深度学习工程师|计算机视觉工程师|后端工程师|前端工程师|架构师|研发经理|工程师)", segment)
+        rows.append({
+            "company": company,
+            "role": role_match.group(1) if role_match else None,
+            "period": period_match.group(1) if period_match else None,
+            "confidence": 0.66,
+        })
+        if len(rows) >= 5:
+            break
+    if rows:
+        return rows
+    return [{"period": f"{start}-{end}", "confidence": 0.58} for start, end in _date_ranges_from_text(normalized)[:4]]
+
+
+def parse_basic_profile(text: str, file_name: str) -> dict[str, Any]:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", normalized)
+    phone_match = re.search(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)", normalized)
+    title_match = re.search(r"(计算机视觉应用工程师/算法工程师|计算机视觉工程师|算法工程师|机器学习工程师|深度学习工程师|后端工程师|前端工程师|架构师|技术负责人|研发经理|工程师)", normalized, flags=re.IGNORECASE)
+    sentences = split_sentences(normalized)
+    first_sentence = sentences[0] if sentences else normalized[:120]
+    name_match = re.match(r"^([\u4e00-\u9fa5]{2,4})(?=\s|计算机|算法|工程师|性别|电话|邮箱|Email|E-mail|\d)", first_sentence)
+    file_name_base = re.sub(r"\.(pdf|doc|docx)$", "", file_name, flags=re.IGNORECASE)
+    file_name_base = re.sub(r"[-_\s]*(简历|resume|副本\s*\(\d+\)|副本)$", "", file_name_base, flags=re.IGNORECASE).strip()
+    return {
+        "full_name": name_match.group(1) if name_match else (file_name_base or None),
+        "email": email_match.group(0) if email_match else None,
+        "phone": phone_match.group(0).replace(" ", "").replace("-", "") if phone_match else None,
+        "current_title": title_match.group(1) if title_match else None,
+        "years_of_experience": infer_experience_years(normalized),
+        "age": infer_age_from_text(normalized),
+        "city": infer_city_from_text(normalized),
+    }
+
+
+def parse_education(text: str) -> list[dict[str, Any]]:
+    normalized = re.sub(r"\s+", " ", normalize_text(text))
+    degree_match = re.search(r"博士|硕士|本科|大专|专科", normalized)
+    if not degree_match:
+        return []
+    institution_match = re.search(r"([\u4e00-\u9fa5A-Za-z]+(?:大学|学院))", normalized)
+    major_match = re.search(r"(计算机科学与技术|软件工程|人工智能|数学|统计学|电子信息|自动化|计算机|算法|机器学习)", normalized)
+    school = institution_match.group(1) if institution_match else None
+    row: dict[str, Any] = {"degree": degree_match.group(0)}
+    if school:
+        row["institution"] = school
+        row["school"] = school
+        row["university"] = school
+    if major_match:
+        row["major"] = major_match.group(1)
+    return [row]
+
+
+def build_resume_profile_from_text(file_name: str, text: str, quality: str) -> dict[str, Any]:
+    spans = build_evidence_spans(text)
+    explicit_skills = [{"skill": item, "confidence": 0.82, "evidence_span_ids": [spans[0]["span_id"]] if spans else []} for item in detect_skills(text)[:12]]
+    inferred_skills = [{"skill": item, "confidence": 0.7, "evidence_span_ids": [spans[0]["span_id"]] if spans else [], "inference_reason": "文本命中"} for item in detect_skills(text)[:8]]
+    projects = parse_projects(text, spans)
+    education = parse_education(text)
+    work_experience = parse_work_experience(text)
+    profile = {
+        "basic_profile": parse_basic_profile(text, file_name),
+        "explicit_skills": explicit_skills,
+        "inferred_skills": inferred_skills,
+        "projects": projects,
+        "work_experience": work_experience,
+        "education": education,
+        "certifications": [],
+        "risk_flags": [],
+        "extraction_confidence": {"overall": 0.8 if quality == "good" else 0.58, "by_section": {"projects": 0.72 if projects else 0.45, "skills": 0.8 if explicit_skills else 0.42, "education": 0.9 if education else 0.5}},
+        "evidence_spans": spans,
+    }
+    if quality != "good":
+        profile["risk_flags"].append({"type": "text_quality", "severity": "medium", "message": "文本质量较弱，建议人工复核"})
+    return profile
+
+
+def derive_candidate_card_meta(text: str, profile: dict[str, Any]) -> dict[str, Any]:
+    basic = profile.get("basic_profile") if isinstance(profile.get("basic_profile"), dict) else {}
+    work_items = profile.get("work_experience") if isinstance(profile.get("work_experience"), list) else []
+    education = profile.get("education") if isinstance(profile.get("education"), list) else []
+    first_education = education[0] if education and isinstance(education[0], dict) else {}
+    first_work = work_items[0] if work_items and isinstance(work_items[0], dict) else {}
+    years = infer_experience_years(text, profile)
+    company = normalize_text(first_work.get("company")) or normalize_text(first_work.get("company_name")) or infer_company_from_text(text, allow_school=False)
+    city = normalize_text(basic.get("city")) or infer_city_from_text(text)
+    age = basic.get("age") if isinstance(basic.get("age"), (int, float)) else infer_age_from_text(text)
+    school = (
+        normalize_text(first_education.get("school"))
+        or normalize_text(first_education.get("university"))
+        or normalize_text(first_education.get("institution"))
+    )
+    return {
+        "years": round(years) if isinstance(years, (int, float)) else None,
+        "age": round(age) if isinstance(age, (int, float)) and 16 <= age <= 60 else None,
+        "city": city or None,
+        "prev_company": company or None,
+        "school": school or None,
+    }
+
 
 def extract_text_from_ocr_payload(raw: Any) -> str | None:
     obj = raw if isinstance(raw, dict) else {}
@@ -2078,6 +2295,302 @@ def get_auth_headers(token: str | None) -> dict[str, str]:
     return headers
 
 
+def get_supabase_admin_headers() -> dict[str, str]:
+    service_role_key = normalize_text(os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+    if not service_role_key:
+        raise HTTPException(status_code=500, detail="Supabase service role is not configured")
+    return {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def public_app_url() -> str:
+    configured = normalize_text(os.getenv("PUBLIC_APP_URL")) or normalize_text(os.getenv("APP_PUBLIC_URL"))
+    return (configured or "https://recruitpro.top").rstrip("/")
+
+
+def auth_redirect_url(redirect_to: str | None, path: str = "") -> str:
+    fallback = f"{public_app_url()}{path}"
+    value = normalize_text(redirect_to)
+    if not value:
+        return fallback
+    if value.startswith("https://recruitpro.top"):
+        return value.rstrip("/")
+    if value.startswith("/"):
+        return f"{public_app_url()}{value}"
+    return fallback
+
+
+def generate_supabase_email_otp(link_type: str, email: str, password: str | None = None, redirect_to: str | None = None) -> dict[str, Any]:
+    base_url = normalize_text(os.getenv("SUPABASE_URL")) or normalize_text(os.getenv("VITE_SUPABASE_URL"))
+    if not base_url:
+        raise HTTPException(status_code=500, detail="Supabase URL is not configured")
+    base_url = base_url.rstrip("/")
+    body: dict[str, Any] = {"type": link_type, "email": email}
+    if password is not None:
+        body["password"] = password
+    if redirect_to:
+        body["redirect_to"] = redirect_to
+    try:
+        response = httpx.post(
+            f"{base_url}/auth/v1/admin/generate_link",
+            headers=get_supabase_admin_headers(),
+            json=body,
+            timeout=20.0,
+            trust_env=False,
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=502, detail="Supabase auth timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Supabase auth unavailable") from exc
+
+    if response.status_code >= 400:
+        detail = "Auth email token generation failed"
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = normalize_text(payload.get("msg")) or normalize_text(payload.get("message")) or normalize_text(payload.get("error_description")) or detail
+        except Exception:
+            detail = normalize_text(response.text) or detail
+        lowered_detail = detail.lower()
+        if (
+            "already registered" in lowered_detail
+            or "user already registered" in lowered_detail
+            or "has already been registered" in lowered_detail
+            or "already been registered" in lowered_detail
+        ):
+            raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录。")
+        if "invalid email" in lowered_detail:
+            raise HTTPException(status_code=400, detail="请输入有效邮箱。")
+        if "password" in lowered_detail and ("weak" in lowered_detail or "short" in lowered_detail):
+            raise HTTPException(status_code=400, detail="密码强度不足，请设置至少 8 位密码。")
+        if "not found" in lowered_detail and link_type == "recovery":
+            raise HTTPException(status_code=404, detail="该邮箱尚未注册。")
+        raise HTTPException(status_code=502, detail=detail)
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Supabase auth returned invalid JSON") from exc
+
+    properties = data.get("properties") if isinstance(data.get("properties"), dict) else {}
+    email_otp = normalize_text(properties.get("email_otp")) or normalize_text(data.get("email_otp"))
+    action_link = normalize_text(properties.get("action_link")) or normalize_text(data.get("action_link"))
+    hashed_token = normalize_text(properties.get("hashed_token")) or normalize_text(data.get("hashed_token"))
+    if not email_otp and not action_link and not hashed_token:
+        raise HTTPException(status_code=502, detail="Supabase auth did not return a usable email token")
+    return {"email_otp": email_otp, "action_link": action_link, "hashed_token": hashed_token}
+
+
+def send_resend_email(to_email: str, subject: str, html: str, text: str) -> None:
+    api_key = normalize_text(os.getenv("RESEND_API_KEY"))
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Resend API key is not configured")
+    from_email = normalize_text(os.getenv("RESEND_FROM_EMAIL")) or "RecruitPro <no-reply@mail.recruitpro.top>"
+    try:
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"from": from_email, "to": [to_email], "subject": subject, "html": html, "text": text},
+            timeout=20.0,
+            trust_env=False,
+        )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=502, detail="Resend email request timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="Resend email service unavailable") from exc
+    if response.status_code >= 400:
+        detail = "Resend email sending failed"
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = normalize_text(payload.get("message")) or normalize_text(payload.get("error")) or detail
+        except Exception:
+            detail = normalize_text(response.text) or detail
+        raise HTTPException(status_code=502, detail=detail)
+
+
+def send_aliyun_smtp_email(to_email: str, subject: str, html: str, text: str) -> None:
+    host = normalize_text(os.getenv("ALIYUN_SMTP_HOST")) or "smtpdm.aliyun.com"
+    port_text = normalize_text(os.getenv("ALIYUN_SMTP_PORT")) or "465"
+    username = normalize_text(os.getenv("ALIYUN_SMTP_USERNAME")) or normalize_text(os.getenv("ALIYUN_FROM_ADDRESS"))
+    password = normalize_text(os.getenv("ALIYUN_SMTP_PASSWORD"))
+    from_email = normalize_text(os.getenv("ALIYUN_FROM_EMAIL")) or normalize_text(os.getenv("RESEND_FROM_EMAIL")) or "RecruitPro <no-reply@mail.recruitpro.top>"
+    use_ssl = normalize_text(os.getenv("ALIYUN_SMTP_SSL")).lower()
+    ssl_enabled = use_ssl not in {"0", "false", "no", "off"}
+
+    if not username or not password:
+        raise HTTPException(status_code=500, detail="Aliyun SMTP is not configured")
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Aliyun SMTP port is invalid") from exc
+
+    message = EmailMessage()
+    message["From"] = from_email
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(text)
+    message.add_alternative(html, subtype="html")
+
+    try:
+        if ssl_enabled:
+            with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
+                smtp.login(username, password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as smtp:
+                smtp.login(username, password)
+                smtp.send_message(message)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise HTTPException(status_code=502, detail="阿里云邮件认证失败，请检查发信地址和 SMTP 密码。") from exc
+    except smtplib.SMTPException as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云邮件发送失败：{normalize_text(str(exc))}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail="阿里云邮件服务连接失败，请检查 SMTP 地址和端口。") from exc
+
+
+def send_auth_email(to_email: str, subject: str, html: str, text: str) -> None:
+    provider = normalize_text(os.getenv("MAIL_PROVIDER")).lower()
+    if provider in {"aliyun", "aliyun-smtp", "directmail"}:
+        send_aliyun_smtp_email(to_email, subject, html, text)
+        return
+    if provider in {"resend", ""}:
+        send_resend_email(to_email, subject, html, text)
+        return
+    raise HTTPException(status_code=500, detail=f"Unsupported mail provider: {provider}")
+
+
+def generate_six_digit_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_recovery_code(email: str, code: str) -> str:
+    secret = room_token_secret()
+    return hmac.new(secret.encode("utf-8"), f"{email}:{code}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def cleanup_auth_code_store(store: dict[str, dict[str, Any]], now: int) -> None:
+    expired_keys: list[str] = []
+    for key, value in store.items():
+        codes = value.get("codes")
+        if isinstance(codes, list):
+            active_codes = [item for item in codes if int(item.get("expires_at", 0)) >= now]
+            if active_codes:
+                value["codes"] = active_codes[-AUTH_CODE_MAX_ACTIVE:]
+            else:
+                expired_keys.append(key)
+        elif int(value.get("expires_at", 0)) < now:
+            expired_keys.append(key)
+    for key in expired_keys:
+        store.pop(key, None)
+
+
+def store_auth_code(store: dict[str, dict[str, Any]], email: str, code: str, action_link: str, email_otp: str | None = None) -> None:
+    now = int(time.time())
+    cleanup_auth_code_store(store, now)
+    current = store.get(email, {})
+    codes = current.get("codes")
+    if not isinstance(codes, list):
+        codes = []
+    codes.append(
+        {
+            "code_hash": hash_recovery_code(email, code),
+            "action_link": action_link,
+            "email_otp": normalize_text(email_otp),
+            "expires_at": now + RECOVERY_CODE_TTL_SECONDS,
+            "created_at": now,
+        }
+    )
+    store[email] = {"codes": codes[-AUTH_CODE_MAX_ACTIVE:]}
+
+
+def verify_auth_code(store: dict[str, dict[str, Any]], email: str, code: str, missing_detail: str, missing_link_detail: str) -> dict[str, str]:
+    now = int(time.time())
+    cleanup_auth_code_store(store, now)
+    record = store.get(email)
+    if not record:
+        raise HTTPException(status_code=400, detail=missing_detail)
+
+    candidates = record.get("codes")
+    if not isinstance(candidates, list):
+        candidates = [record]
+
+    actual = hash_recovery_code(email, code)
+    for candidate in candidates:
+        if int(candidate.get("expires_at", 0)) < now:
+            continue
+        expected = normalize_text(candidate.get("code_hash"))
+        if hmac.compare_digest(expected, actual):
+            action_link = normalize_text(candidate.get("action_link"))
+            email_otp = normalize_text(candidate.get("email_otp"))
+            if not action_link:
+                raise HTTPException(status_code=500, detail=missing_link_detail)
+            store.pop(email, None)
+            return {"actionLink": action_link, "emailOtp": email_otp}
+
+    active_codes = [item for item in candidates if int(item.get("expires_at", 0)) >= now]
+    if active_codes:
+        record["codes"] = active_codes[-AUTH_CODE_MAX_ACTIVE:]
+    else:
+        store.pop(email, None)
+    raise HTTPException(status_code=400, detail="验证码不正确，请重新输入。")
+
+
+def store_signup_code(email: str, code: str, action_link: str, email_otp: str | None = None) -> None:
+    store_auth_code(SIGNUP_CODE_STORE, email, code, action_link, email_otp)
+
+
+def verify_signup_code(email: str, code: str) -> dict[str, str]:
+    return verify_auth_code(
+        SIGNUP_CODE_STORE,
+        email,
+        code,
+        "验证码无效或已过期，请重新发送。",
+        "注册链接生成失败，请重新发送验证码。",
+    )
+
+
+def store_recovery_code(email: str, code: str, action_link: str, email_otp: str | None = None) -> None:
+    store_auth_code(RECOVERY_CODE_STORE, email, code, action_link, email_otp)
+
+
+def verify_recovery_code(email: str, code: str) -> dict[str, str]:
+    return verify_auth_code(
+        RECOVERY_CODE_STORE,
+        email,
+        code,
+        "验证码无效或已过期，请重新发送。",
+        "重置链接生成失败，请重新发送验证码。",
+    )
+
+
+def render_otp_email(title: str, intro: str, otp: str, fallback_link: str | None = None) -> tuple[str, str]:
+    link_html = (
+        f'<p style="margin:18px 0 0;color:#426a9a;font-size:14px;">如果验证码不可用，也可以打开这个链接完成操作：'
+        f'<a href="{fallback_link}" style="color:#1f5fbf;">继续操作</a></p>'
+        if fallback_link
+        else ""
+    )
+    html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f8fd;padding:28px;">
+      <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #dbe7f5;border-radius:18px;padding:28px;color:#16355f;">
+        <h1 style="font-size:22px;margin:0 0 12px;">{title}</h1>
+        <p style="font-size:15px;line-height:1.7;margin:0 0 18px;color:#426a9a;">{intro}</p>
+        <div style="letter-spacing:8px;font-size:34px;font-weight:700;color:#1f5fbf;background:#f4f8ff;border:1px solid #c7daf6;border-radius:14px;padding:16px 18px;text-align:center;">{otp}</div>
+        <p style="margin:18px 0 0;color:#6b86a4;font-size:13px;">验证码有效期以系统安全策略为准。若不是你本人操作，请忽略这封邮件。</p>
+        {link_html}
+      </div>
+    </div>
+    """.strip()
+    text_lines = [title, intro, f"验证码：{otp}", "若不是你本人操作，请忽略这封邮件。"]
+    if fallback_link:
+        text_lines.append(f"备用链接：{fallback_link}")
+    return html, "\n\n".join(text_lines)
+
+
 def get_bearer_token(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -2960,6 +3473,75 @@ app.add_middleware(
 @app.get("/api/health")
 def healthcheck() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.post("/api/auth/signup-email")
+def send_signup_email(payload: SignupEmailPayload) -> dict[str, Any]:
+    email = normalize_text(payload.email).lower()
+    password = payload.password
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="请输入有效邮箱。")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="密码长度至少 8 位。")
+
+    token = generate_supabase_email_otp("signup", email=email, password=password, redirect_to=auth_redirect_url(payload.redirectTo))
+    action_link = normalize_text(token.get("action_link"))
+    if not action_link:
+        raise HTTPException(status_code=502, detail="注册链接生成失败")
+    otp = generate_six_digit_code()
+    store_signup_code(email, otp, action_link, normalize_text(token.get("email_otp")))
+    html, text = render_otp_email(
+        "验证 RecruitPro 账号",
+        "请输入下面的验证码完成注册。",
+        otp,
+    )
+    send_auth_email(email, "RecruitPro 注册验证码", html, text)
+    return {"ok": True}
+
+
+@app.post("/api/auth/signup-verify")
+def verify_signup_email(payload: VerifyRecoveryCodePayload) -> dict[str, Any]:
+    email = normalize_text(payload.email).lower()
+    code = re.sub(r"\D", "", normalize_text(payload.code))
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="请输入有效邮箱。")
+    if len(code) != 6:
+        raise HTTPException(status_code=400, detail="请输入 6 位验证码。")
+    auth_payload = verify_signup_code(email, code)
+    return {"ok": True, **auth_payload}
+
+
+@app.post("/api/auth/recovery-email")
+def send_recovery_email(payload: AuthEmailPayload) -> dict[str, Any]:
+    email = normalize_text(payload.email).lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="请输入有效邮箱。")
+
+    token = generate_supabase_email_otp("recovery", email=email, redirect_to=auth_redirect_url(payload.redirectTo, "/reset-password"))
+    action_link = normalize_text(token.get("action_link"))
+    if not action_link:
+        raise HTTPException(status_code=502, detail="重置链接生成失败")
+    otp = generate_six_digit_code()
+    store_recovery_code(email, otp, action_link, normalize_text(token.get("email_otp")))
+    html, text = render_otp_email(
+        "RecruitPro 安全验证码",
+        "请输入下面的验证码继续完成账号安全验证。",
+        otp,
+    )
+    send_auth_email(email, "RecruitPro 安全验证码", html, text)
+    return {"ok": True}
+
+
+@app.post("/api/auth/recovery-verify")
+def verify_recovery_email(payload: VerifyRecoveryCodePayload) -> dict[str, Any]:
+    email = normalize_text(payload.email).lower()
+    code = re.sub(r"\D", "", normalize_text(payload.code))
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="请输入有效邮箱。")
+    if len(code) != 6:
+        raise HTTPException(status_code=400, detail="请输入 6 位验证码。")
+    auth_payload = verify_recovery_code(email, code)
+    return {"ok": True, **auth_payload}
 
 
 @app.get("/api/dashboard")
@@ -4165,17 +4747,29 @@ async def process_phase1_upload_async(
         basic_profile = profile_payload["basic_profile"]
         first_education = profile_payload["education"][0] if profile_payload["education"] else {}
         years = basic_profile.get("years_of_experience")
+        candidate_meta = derive_candidate_card_meta(text, profile_payload)
+        display_years = candidate_meta.get("years") if candidate_meta.get("years") is not None else years
+        edu_level = first_education.get("degree") if isinstance(first_education, dict) else None
+        edu_text = " / ".join(
+            item
+            for item in [
+                normalize_text(edu_level),
+                normalize_text(candidate_meta.get("school")),
+            ]
+            if item
+        )
         candidate_patch = {
             "p_id": position["id"],
             "name": basic_profile.get("full_name") or re.sub(r"\.(pdf|doc|docx)$", "", file_name, flags=re.IGNORECASE) or "Unnamed candidate",
             "title": basic_profile.get("current_title") or position.get("title") or "Unknown position",
-            "exp": f"{years} years" if isinstance(years, (int, float)) else "Experience unknown",
-            "exp_years": round(years) if isinstance(years, (int, float)) else None,
-            "edu": first_education.get("degree") if isinstance(first_education, dict) else "Education unknown",
-            "edu_level": first_education.get("degree") if isinstance(first_education, dict) else "Education unknown",
-            "age": None,
+            "exp": f"{display_years} years" if isinstance(display_years, (int, float)) else "Experience unknown",
+            "exp_years": round(display_years) if isinstance(display_years, (int, float)) else None,
+            "edu": edu_text or "Education unknown",
+            "edu_level": edu_level or "Education unknown",
+            "age": candidate_meta.get("age"),
+            "city": candidate_meta.get("city"),
             "match": int(match_output["overall_score"]),
-            "prev_company": None,
+            "prev_company": candidate_meta.get("prev_company"),
             "tag": recommendation_to_tag(match_output["recommendation"]),
             "highlight": match_output["summary_reason"],
         }
@@ -4427,17 +5021,29 @@ async def run_phase1_screening(
         basic_profile = profile_payload["basic_profile"]
         first_education = profile_payload["education"][0] if profile_payload["education"] else {}
         years = basic_profile.get("years_of_experience")
+        candidate_meta = derive_candidate_card_meta(text, profile_payload)
+        display_years = candidate_meta.get("years") if candidate_meta.get("years") is not None else years
+        edu_level = first_education.get("degree") if isinstance(first_education, dict) else None
+        edu_text = " / ".join(
+            item
+            for item in [
+                normalize_text(edu_level),
+                normalize_text(candidate_meta.get("school")),
+            ]
+            if item
+        )
         candidate_patch = {
             "p_id": position["id"],
             "name": basic_profile.get("full_name") or re.sub(r"\.(pdf|doc|docx)$", "", file.filename or "resume", flags=re.IGNORECASE) or "未命名候选人",
             "title": basic_profile.get("current_title") or position.get("title") or "未知职位",
-            "exp": f"{years}年经验" if isinstance(years, (int, float)) else "经验未明确",
-            "exp_years": round(years) if isinstance(years, (int, float)) else None,
-            "edu": first_education.get("degree") if isinstance(first_education, dict) else "学历未明确",
-            "edu_level": first_education.get("degree") if isinstance(first_education, dict) else "学历未明确",
-            "age": None,
+            "exp": f"{display_years}年经验" if isinstance(display_years, (int, float)) else "经验未明确",
+            "exp_years": round(display_years) if isinstance(display_years, (int, float)) else None,
+            "edu": edu_text or "学历未明确",
+            "edu_level": edu_level or "学历未明确",
+            "age": candidate_meta.get("age"),
+            "city": candidate_meta.get("city"),
             "match": int(match_output["overall_score"]),
-            "prev_company": None,
+            "prev_company": candidate_meta.get("prev_company"),
             "tag": recommendation_to_tag(match_output["recommendation"]),
             "highlight": match_output["summary_reason"],
         }

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import { ArrowRight, CheckCircle2, Eye, EyeOff, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import BrandMark from '../components/BrandMark';
 import { supabase } from '../lib/supabase';
-import { ShieldCheck, Lock, ArrowRight, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -30,17 +31,13 @@ export default function ResetPassword() {
 
       if (code) {
         const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-        if (exchangeError) {
-          return { ok: false, message: exchangeError.message };
-        }
+        if (exchangeError) return { ok: false, message: exchangeError.message };
       } else if (type === 'recovery' && accessToken && refreshToken) {
         const { error: setSessionError } = await supabase.auth.setSession({
           access_token: accessToken,
           refresh_token: refreshToken,
         });
-        if (setSessionError) {
-          return { ok: false, message: setSessionError.message };
-        }
+        if (setSessionError) return { ok: false, message: setSessionError.message };
       }
       return { ok: true };
     };
@@ -69,9 +66,11 @@ export default function ResetPassword() {
       setCheckingSession(false);
     };
 
-    bootstrap();
+    void bootstrap();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return;
       if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) {
         setReady(true);
@@ -95,12 +94,10 @@ export default function ResetPassword() {
       setError('请完整填写新密码和确认密码。');
       return;
     }
-
     if (password.length < MIN_PASSWORD_LENGTH) {
       setError(`密码长度至少 ${MIN_PASSWORD_LENGTH} 位。`);
       return;
     }
-
     if (password !== confirmPassword) {
       setError('两次输入的密码不一致。');
       return;
@@ -127,135 +124,142 @@ export default function ResetPassword() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4 relative overflow-hidden font-sans">
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100 rounded-full blur-[100px] animate-pulse"></div>
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-50 rounded-full blur-[100px]"></div>
-
-      <div className="w-full max-w-md z-10">
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 mb-6 shadow-xl shadow-blue-500/20">
-            <ShieldCheck className="w-8 h-8 text-white" />
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f4f8fd] p-4 text-[#16355f]">
+      <div className="absolute inset-0 bg-[linear-gradient(135deg,#eef5ff_0%,#f8fbff_48%,#edf4fc_100%)]" />
+      <div className="relative z-10 w-full max-w-md">
+        <div className="mb-8 text-center">
+          <div className="mb-5 inline-flex h-16 w-16 items-center justify-center rounded-[24px] bg-[linear-gradient(145deg,#16355f,#2d67b8)] shadow-xl shadow-[#1f5fbf]/20">
+            <BrandMark className="h-9 w-9 text-white" />
           </div>
-          <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">TechPro Recruit</h1>
-          <p className="text-gray-500 mt-2 font-medium">设置新密码</p>
+          <h1 className="text-3xl font-semibold tracking-[-0.04em] text-[#16355f]">RecruitPro</h1>
+          <p className="mt-2 text-sm font-medium text-[#5d7896]">设置新密码</p>
         </div>
 
-        <div className="bg-white border border-gray-100 rounded-3xl p-8 shadow-2xl shadow-gray-200/50">
-          <div className="text-center mb-6">
-            <h2 className="text-gray-900 font-bold text-xl">重置密码</h2>
-            <p className="text-gray-500 text-sm mt-2">请输入新密码并确认。</p>
+        <div className="rounded-[32px] border border-[#dbe7f5] bg-white p-7 shadow-[0_24px_54px_-42px_rgba(21,53,102,0.24)]">
+          <div className="mb-6 text-center">
+            <h2 className="text-xl font-semibold text-[#16355f]">重置密码</h2>
+            <p className="mt-2 text-sm text-[#5d7896]">请输入新密码并确认。</p>
           </div>
 
           {checkingSession ? (
-            <div className="text-sm text-gray-500 text-center py-8">正在校验重置链接...</div>
+            <div className="py-8 text-center text-sm text-[#5d7896]">正在校验重置授权...</div>
           ) : !ready ? (
             <div className="space-y-4">
-              {error && (
-                <div className="bg-red-50 border border-red-100 text-red-600 text-sm py-3 px-4 rounded-xl flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></div>
-                  <span className="leading-tight">{error}</span>
-                </div>
-              )}
+              {error && <Alert tone="error">{error}</Alert>}
               <button
                 type="button"
                 onClick={() => navigate('/login', { replace: true })}
-                className="w-full border border-gray-200 text-gray-700 font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors"
+                className="w-full rounded-xl border border-[#c7daf6] py-3 font-semibold text-[#1f5fbf] transition-colors hover:bg-[#f4f8ff]"
               >
                 返回登录页
               </button>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold uppercase tracking-wider text-gray-500 ml-1">
-                  新密码 <span className="text-gray-400 font-normal normal-case tracking-normal pl-1">(至少 {MIN_PASSWORD_LENGTH} 位)</span>
-                </label>
-                <div className="relative group">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="请输入新密码"
-                    className="w-full bg-white border border-gray-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 px-11 py-3.5 rounded-xl text-gray-900 outline-none transition-all placeholder:text-gray-300 font-medium"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
+              <PasswordField
+                label={`新密码（至少 ${MIN_PASSWORD_LENGTH} 位）`}
+                value={password}
+                visible={showPassword}
+                onToggle={() => setShowPassword((value) => !value)}
+                onChange={setPassword}
+                placeholder="请输入新密码"
+              />
+              <PasswordField
+                label="确认新密码"
+                value={confirmPassword}
+                visible={showConfirm}
+                onToggle={() => setShowConfirm((value) => !value)}
+                onChange={setConfirmPassword}
+                placeholder="请再次输入新密码"
+                invalid={Boolean(confirmPassword && confirmPassword !== password)}
+              />
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold uppercase tracking-wider text-gray-500 ml-1">确认新密码</label>
-                <div className="relative group">
-                  <Lock
-                    className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${
-                      confirmPassword && confirmPassword !== password
-                        ? 'text-red-400'
-                        : 'text-gray-400 group-focus-within:text-blue-500'
-                    }`}
-                  />
-                  <input
-                    type={showConfirm ? 'text' : 'password'}
-                    required
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="请再次输入新密码"
-                    className={`w-full bg-white border focus:ring-4 px-11 py-3.5 rounded-xl text-gray-900 outline-none transition-all placeholder:text-gray-300 font-medium ${
-                      confirmPassword && confirmPassword !== password
-                        ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10'
-                        : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/10'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirm((v) => !v)}
-                    className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${
-                      confirmPassword && confirmPassword !== password
-                        ? 'text-red-400'
-                        : 'text-gray-400 hover:text-gray-600'
-                    }`}
-                  >
-                    {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                {confirmPassword && confirmPassword === password && (
-                  <p className="text-green-600 text-xs font-medium ml-1 flex items-center gap-1 mt-1 animate-in fade-in">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> 两次密码一致
-                  </p>
-                )}
-              </div>
-
-              {error && (
-                <div className="bg-red-50 border border-red-100 text-red-600 text-sm py-3 px-4 rounded-xl flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></div>
-                  <span className="leading-tight">{error}</span>
-                </div>
+              {confirmPassword && confirmPassword === password && (
+                <p className="ml-1 flex items-center gap-1 text-xs font-medium text-emerald-600">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> 两次密码一致
+                </p>
               )}
-              {success && (
-                <div className="bg-green-50 border border-green-100 text-green-700 text-sm py-3 px-4 rounded-xl flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 mt-1.5 flex-shrink-0"></div>
-                  <span className="leading-tight">{success}</span>
-                </div>
-              )}
+              {error && <Alert tone="error">{error}</Alert>}
+              {success && <Alert tone="success">{success}</Alert>}
 
               <button
                 type="submit"
-                disabled={loading || !!success}
-                className="w-full bg-blue-600 text-white font-semibold py-3.5 rounded-xl shadow-lg shadow-blue-500/30 hover:bg-blue-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group disabled:opacity-60 disabled:pointer-events-none"
+                disabled={loading || Boolean(success)}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1f5fbf] py-3.5 font-semibold text-white shadow-lg shadow-[#1f5fbf]/25 transition-all hover:bg-[#164d9c] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-60"
               >
                 {loading ? '提交中...' : '更新密码'}
-                {!loading && <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />}
+                {!loading && <ArrowRight className="h-4 w-4" />}
               </button>
             </form>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function PasswordField({
+  label,
+  value,
+  visible,
+  onToggle,
+  onChange,
+  placeholder,
+  invalid = false,
+}: {
+  label: string;
+  value: string;
+  visible: boolean;
+  onToggle: () => void;
+  onChange: (value: string) => void;
+  placeholder: string;
+  invalid?: boolean;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="ml-1 text-xs font-semibold uppercase tracking-wider text-[#6b86a4]">{label}</label>
+      <div className="relative group">
+        <Lock
+          className={`absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 transition-colors ${
+            invalid ? 'text-rose-400' : 'text-[#9eb0c4] group-focus-within:text-[#1f5fbf]'
+          }`}
+        />
+        <input
+          type={visible ? 'text' : 'password'}
+          required
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`w-full rounded-xl border bg-white px-11 py-3.5 font-medium text-[#16355f] outline-none transition-all placeholder:text-[#b7c7d9] focus:ring-4 ${
+            invalid
+              ? 'border-rose-300 focus:border-rose-500 focus:ring-rose-500/10'
+              : 'border-[#dbe7f5] focus:border-[#1f5fbf] focus:ring-[#1f5fbf]/10'
+          }`}
+        />
+        <button
+          type="button"
+          onClick={onToggle}
+          className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${
+            invalid ? 'text-rose-400' : 'text-[#9eb0c4] hover:text-[#5d7896]'
+          }`}
+        >
+          {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Alert({ children, tone }: { children: React.ReactNode; tone: 'error' | 'success' }) {
+  const styles =
+    tone === 'error'
+      ? 'border-rose-100 bg-rose-50 text-rose-600'
+      : 'border-emerald-100 bg-emerald-50 text-emerald-700';
+  const dot = tone === 'error' ? 'bg-rose-500' : 'bg-emerald-500';
+  return (
+    <div className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-sm ${styles}`}>
+      <div className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      <span className="leading-tight">{children}</span>
     </div>
   );
 }

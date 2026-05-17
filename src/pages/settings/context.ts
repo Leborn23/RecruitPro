@@ -1,11 +1,13 @@
 import { useOutletContext } from 'react-router-dom';
 
+export type SettingsRecord = Record<string, unknown> & { id?: string };
+
 export interface SettingsCenterContextValue {
-  settings: any;
+  settings: SettingsRecord | null;
   loading: boolean;
   syncError: string | null;
-  updateSetting: (field: string, value: any) => Promise<void>;
-  updateSettings: (patch: Record<string, any>) => Promise<void>;
+  updateSetting: (field: string, value: unknown) => Promise<void>;
+  updateSettings: (patch: Record<string, unknown>) => Promise<void>;
 }
 
 export function useSettingsCenterContext() {

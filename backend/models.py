@@ -73,6 +73,22 @@ class RoomPasswordPayload(BaseModel):
     password: str | None = None
 
 
+class SignupEmailPayload(BaseModel):
+    email: str
+    password: str
+    redirectTo: str | None = None
+
+
+class AuthEmailPayload(BaseModel):
+    email: str
+    redirectTo: str | None = None
+
+
+class VerifyRecoveryCodePayload(BaseModel):
+    email: str
+    code: str
+
+
 class SalaryMarketRawRecordPayload(BaseModel):
     source_job_title: str
     source_city: str | None = None

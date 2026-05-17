@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   CalendarDays,
@@ -11,11 +11,11 @@ import {
   Mail,
   Settings,
   Settings2,
-  ShieldCheck,
   UserRound,
   Users,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import BrandMark from '../BrandMark';
 import './AppLayout.css';
 
 const NAV_LINKS = [
@@ -86,7 +86,7 @@ export function AppLayout() {
           : [link]
       )
     : visibleNavLinks;
-  const hasPendingAuth = !isSuperAdmin && visibleNavLinks.length === 0;
+  const hasPendingAuth = false;
   const openProfile = () => {
     setIsUserMenuOpen(false);
     navigate('/profile');
@@ -137,7 +137,7 @@ export function AppLayout() {
           <div className="app-layout__brand-card">
             <div className="flex items-center gap-3">
               <div className="app-layout__brand-mark">
-                <span className="text-lg font-bold leading-none text-white">R</span>
+                <BrandMark className="h-7 w-7 text-white" />
               </div>
               <div>
                 <h1 className="app-layout__brand-title">RecruitPro</h1>
@@ -165,21 +165,6 @@ export function AppLayout() {
               )}
             </NavLink>
           ))}
-          {false && hasPermission('MANAGE_INTERVIEWS') ? (
-            <NavLink
-              to="/interview-reports"
-              className={({ isActive }) => `app-layout__nav-link ${isActive ? 'is-active' : ''}`}
-            >
-              {({ isActive }) => (
-                <>
-                  <div className={`app-layout__nav-icon ${isActive ? 'is-active' : ''}`}>
-                    <FileText className="h-5 w-5 transition-transform group-hover:scale-105" />
-                  </div>
-                  <span className="app-layout__nav-label">面试报告</span>
-                </>
-              )}
-            </NavLink>
-          ) : null}
         </nav>
 
         <div className="app-layout__user-shell">
@@ -198,7 +183,6 @@ export function AppLayout() {
                     {displayName}
                   </p>
                   <p className="app-layout__user-role">
-                    {isSuperAdmin ? <ShieldCheck className="h-3 w-3 text-[#1f5fbf]" /> : null}
                     {isSuperAdmin ? '超级管理员' : '普通用户'}
                   </p>
                 </div>

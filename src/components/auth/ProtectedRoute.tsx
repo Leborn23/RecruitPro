@@ -1,7 +1,7 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
+import { Loader2, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { ShieldAlert, Loader2 } from 'lucide-react';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -19,8 +19,8 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
   if (loading) {
     return (
-      <div className="h-full w-full flex items-center justify-center p-20">
-        <Loader2 className="w-8 h-8 animate-spin text-primary/30" />
+      <div className="flex h-full w-full items-center justify-center p-20">
+        <Loader2 className="h-8 w-8 animate-spin text-primary/30" />
       </div>
     );
   }
@@ -30,8 +30,8 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     const searchParams = new URLSearchParams(location.search);
     const isRecoveryByHash =
       hashParams.get('type') === 'recovery' &&
-      !!hashParams.get('access_token') &&
-      !!hashParams.get('refresh_token');
+      Boolean(hashParams.get('access_token')) &&
+      Boolean(hashParams.get('refresh_token'));
     const isRecoveryByQuery = searchParams.get('type') === 'recovery';
     const callbackSuffix = `${location.search}${location.hash}`;
 
@@ -42,24 +42,24 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   }
 
   if (requireSuperAdmin && !isSuperAdmin) {
-    return <AccessDenied message="仅系统所有者或超级管理员可访问此页面。" />;
+    return <AccessDenied message="仅系统所有者或超级管理员可以访问此页面。" />;
   }
 
   if (permission && !hasPermission(permission)) {
-    return <AccessDenied message="你当前没有访问该模块的权限，请联系管理员开通。" />;
+    return <AccessDenied message="当前账号暂未开通此模块权限。" />;
   }
 
   return <>{children}</>;
 };
 
 const AccessDenied = ({ message }: { message: string }) => (
-  <div className="min-h-[60vh] flex flex-col items-center justify-center p-8 bg-surface-container-lowest rounded-3xl border border-outline-variant/15 text-center animate-in fade-in zoom-in duration-300">
-    <div className="w-16 h-16 rounded-full bg-error/10 flex items-center justify-center mb-6">
-      <ShieldAlert className="w-8 h-8 text-error" />
+  <div className="flex min-h-[60vh] flex-col items-center justify-center rounded-3xl border border-outline-variant/15 bg-surface-container-lowest p-8 text-center animate-in fade-in zoom-in duration-300">
+    <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-error/10">
+      <ShieldAlert className="h-8 w-8 text-error" />
     </div>
-    <h2 className="text-2xl font-bold text-on-surface mb-2">访问受限</h2>
-    <p className="text-on-surface-variant max-w-md">{message}</p>
-    <button onClick={() => window.history.back()} className="mt-8 text-primary font-bold hover:underline">
+    <h2 className="mb-2 text-2xl font-bold text-on-surface">访问受限</h2>
+    <p className="max-w-md text-on-surface-variant">{message}</p>
+    <button onClick={() => window.history.back()} className="mt-8 font-bold text-primary hover:underline">
       返回上一页
     </button>
   </div>

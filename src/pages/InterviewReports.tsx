@@ -622,7 +622,7 @@ export default function InterviewReports() {
       const normalizedReports = ((reportRows ?? []) as InterviewReportRow[]).filter((report) => report.interview_id);
       const interviewIds = Array.from(new Set(normalizedReports.map((report) => report.interview_id)));
       let interviewMap = new Map<string, InterviewSummary>();
-      let proctoringMap = new Map<string, ProctoringSummary>();
+      const proctoringMap = new Map<string, ProctoringSummary>();
 
       if (interviewIds.length > 0) {
         const { data: interviews, error: interviewError } = await supabase
@@ -727,7 +727,7 @@ export default function InterviewReports() {
     return () => {
       cancelled = true;
     };
-  }, [selectedReportView?.id]);
+  }, [selectedReportView]);
 
   const deleteReport = async (target: ReportCard) => {
     const reportId = target.report.id;

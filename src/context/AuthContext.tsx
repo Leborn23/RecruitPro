@@ -7,6 +7,16 @@ interface AuthProfile {
   permissions: string[];
 }
 
+const BUSINESS_PERMISSIONS = [
+  'VIEW_DASHBOARD',
+  'MANAGE_POSITIONS',
+  'SCREEN_RESUMES',
+  'VIEW_CANDIDATES',
+  'MANAGE_INTERVIEWS',
+  'VIEW_SALARY',
+  'MANAGE_SETTINGS',
+];
+
 interface AuthContextType {
   session: Session | null;
   user: User | null;
@@ -27,18 +37,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          fetchProfile(session.user.id);
+        } else {
+          setLoading(false);
+        }
+      })
+      .catch((error) => {
+        console.error('Error getting auth session:', error);
+        setSession(null);
+        setUser(null);
+        setProfile(null);
         setLoading(false);
-      }
-    });
+      });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -82,6 +103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const hasPermission = (permission: string) => {
     if (profile?.role === 'super_admin' || profile?.role === 'owner') return true;
+    if (BUSINESS_PERMISSIONS.includes(permission)) return true;
     return profile?.permissions.includes(permission) ?? false;
   };
 
