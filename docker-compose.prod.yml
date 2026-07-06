@@ -43,6 +43,7 @@ services:
         VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:?set VITE_SUPABASE_ANON_KEY in .env.production and run docker-compose with --env-file .env.production}
         VITE_FASTAPI_BASE_URL: ${VITE_FASTAPI_BASE_URL:-/api-fast}
         VITE_SCREENING_USE_BACKEND: ${VITE_SCREENING_USE_BACKEND:-true}
+        VITE_INTERVIEW_PROCTORING_ENABLED: ${VITE_INTERVIEW_PROCTORING_ENABLED:-true}
     ports:
       - "3000:80"
     depends_on:

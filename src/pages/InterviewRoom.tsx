@@ -65,6 +65,11 @@ function getFastApiBaseUrl(): string {
   return (import.meta.env.VITE_FASTAPI_BASE_URL as string | undefined)?.trim().replace(/\/$/, '') || '/api-fast';
 }
 
+function isInterviewProctoringEnabled(): boolean {
+  const raw = (import.meta.env.VITE_INTERVIEW_PROCTORING_ENABLED as string | undefined)?.trim().toLowerCase();
+  return raw == null || !['0', 'false', 'off', 'disabled'].includes(raw);
+}
+
 async function fetchRoomJson<T>(path: string): Promise<T> {
   const response = await fetch(`${getFastApiBaseUrl()}${path}`);
   const text = await response.text();
@@ -204,10 +209,11 @@ export default function InterviewRoom() {
   const [passwordError, setPasswordError] = useState('');
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionFinalized = hasSubmitted || isClosedStatus(interview?.status);
+  const proctoringEnabled = isInterviewProctoringEnabled();
   const proctoring = useInterviewProctoring({
     interviewId,
     sessionId: interview?.session_id ?? null,
-    enabled: accessGranted && !sessionFinalized,
+    enabled: proctoringEnabled && accessGranted && !sessionFinalized,
     accessToken: roomAccessToken
   });
 
@@ -637,8 +643,7 @@ export default function InterviewRoom() {
     !isInterviewClosed &&
     !hasInterviewStarted &&
     busyAction === null &&
-    proctoring.consented &&
-    proctoringReady;
+    (!proctoringEnabled || (proctoring.consented && proctoringReady));
   const canSubmit =
     hasInterviewStarted &&
     !!interview?.session_id &&
@@ -867,79 +872,81 @@ export default function InterviewRoom() {
               </p>
             </div>
 
-            <div className="rounded-[22px] border border-[#d6e2f1] bg-[#f7fbff] p-4 space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="space-y-1">
-                  <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-[#16355f]">
-                    <ShieldCheck className="w-4 h-4" />
-                    摄像头监考
-                  </h3>
-                  <p className="text-xs text-[#6b86a4]">仅保存异常关键帧，不进行全程录像。</p>
+            {proctoringEnabled ? (
+              <div className="rounded-[22px] border border-[#d6e2f1] bg-[#f7fbff] p-4 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-[#16355f]">
+                      <ShieldCheck className="w-4 h-4" />
+                      摄像头监考
+                    </h3>
+                    <p className="text-xs text-[#6b86a4]">仅保存异常关键帧，不进行全程录像。</p>
+                  </div>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${proctoringStatusClass}`}>
+                    <ProctoringStatusIcon className="w-3.5 h-3.5" />
+                    {proctoring.statusText}
+                  </span>
                 </div>
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${proctoringStatusClass}`}>
-                  <ProctoringStatusIcon className="w-3.5 h-3.5" />
-                  {proctoring.statusText}
-                </span>
-              </div>
 
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_260px]">
-                <div className="space-y-3">
-                  <label className="flex items-start gap-2 rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3 text-sm text-[#355b87]">
-                    <input
-                      type="checkbox"
-                      checked={proctoring.consented}
-                      onChange={(event) => proctoring.setConsented(event.target.checked)}
-                      className="mt-1 h-4 w-4 rounded border-[#c7daf6] text-primary focus:ring-primary"
+                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_260px]">
+                  <div className="space-y-3">
+                    <label className="flex items-start gap-2 rounded-[16px] border border-[#d6e2f1] bg-white px-3 py-3 text-sm text-[#355b87]">
+                      <input
+                        type="checkbox"
+                        checked={proctoring.consented}
+                        onChange={(event) => proctoring.setConsented(event.target.checked)}
+                        className="mt-1 h-4 w-4 rounded border-[#c7daf6] text-primary focus:ring-primary"
+                      />
+                      <span>
+                        我同意在本场面试中开启摄像头监考，并知悉系统仅保存异常关键帧，不进行全程录像。
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void proctoring.start()}
+                      disabled={proctoringStartDisabled}
+                      className="inline-flex items-center justify-center gap-2 rounded-md bg-white border border-[#c7daf6] px-4 py-2.5 text-sm font-semibold text-[#355b87] hover:bg-[#eef5ff] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <Camera className="w-4 h-4" />
+                      {proctoringRequesting ? '正在打开摄像头...' : proctoringRunning ? '摄像头已就绪' : '打开摄像头'}
+                    </button>
+                    <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${screenSwitchStatusClass}`}>
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      {proctoring.screenSwitch.statusText}
+                    </div>
+                  </div>
+
+                  <div className="relative overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
+                    <video
+                      ref={proctoring.videoRef}
+                      muted
+                      playsInline
+                      className="h-full w-full object-fill"
                     />
-                    <span>
-                      我同意在本场面试中开启摄像头监考，并知悉系统仅保存异常关键帧，不进行全程录像。
-                    </span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void proctoring.start()}
-                    disabled={proctoringStartDisabled}
-                    className="inline-flex items-center justify-center gap-2 rounded-md bg-white border border-[#c7daf6] px-4 py-2.5 text-sm font-semibold text-[#355b87] hover:bg-[#eef5ff] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    <Camera className="w-4 h-4" />
-                    {proctoringRequesting ? '正在打开摄像头...' : proctoringRunning ? '摄像头已就绪' : '打开摄像头'}
-                  </button>
-                  <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${screenSwitchStatusClass}`}>
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    {proctoring.screenSwitch.statusText}
+                    {proctoring.faceBox ? (
+                      <div
+                        className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
+                        style={{
+                          left: `${proctoring.faceBox.x * 100}%`,
+                          top: `${proctoring.faceBox.y * 100}%`,
+                          width: `${proctoring.faceBox.width * 100}%`,
+                          height: `${proctoring.faceBox.height * 100}%`,
+                        }}
+                      />
+                    ) : proctoringRunning ? (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-xs font-semibold text-white">
+                        未检测到人脸框
+                      </div>
+                    ) : null}
+                    {proctoring.faceBox ? (
+                      <div className={`absolute bottom-2 left-2 rounded px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                        {proctoring.faceBox.label}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-
-                <div className="relative overflow-hidden rounded-[18px] border border-[#c7daf6] bg-[#0f172a] aspect-video">
-                  <video
-                    ref={proctoring.videoRef}
-                    muted
-                    playsInline
-                    className="h-full w-full object-fill"
-                  />
-                  {proctoring.faceBox ? (
-                    <div
-                      className={`absolute border-2 ${proctoring.faceBox.state === 'warning' ? 'border-amber-300 shadow-[0_0_0_9999px_rgba(180,83,9,0.16)]' : 'border-emerald-300 shadow-[0_0_0_9999px_rgba(16,185,129,0.08)]'}`}
-                      style={{
-                        left: `${proctoring.faceBox.x * 100}%`,
-                        top: `${proctoring.faceBox.y * 100}%`,
-                        width: `${proctoring.faceBox.width * 100}%`,
-                        height: `${proctoring.faceBox.height * 100}%`,
-                      }}
-                    />
-                  ) : proctoringRunning ? (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/25 text-xs font-semibold text-white">
-                      未检测到人脸框
-                    </div>
-                  ) : null}
-                  {proctoring.faceBox ? (
-                    <div className={`absolute bottom-2 left-2 rounded px-2 py-1 text-[11px] font-semibold text-white shadow-sm ${proctoring.faceBox.state === 'warning' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
-                      {proctoring.faceBox.label}
-                    </div>
-                  ) : null}
-                </div>
               </div>
-            </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
               <button
@@ -1067,7 +1074,7 @@ export default function InterviewRoom() {
                 <p className="text-[11px] text-[#6b86a4]">{timerView.hint}</p>
               </div>
 
-              {!isInterviewClosed ? (
+              {!isInterviewClosed && proctoringEnabled ? (
                 <>
                   <div className="rounded-[20px] border border-[#d6e2f1] bg-[#f7fbff] p-3 space-y-3">
                     <div className="flex items-center justify-between gap-3">
