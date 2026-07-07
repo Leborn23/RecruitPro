@@ -1,0 +1,68 @@
+name: Deploy Supabase Interview Functions
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/functions/**"
+      - "supabase/config.toml"
+      - ".github/workflows/deploy-supabase-functions.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect deployable functions
+        id: functions
+        shell: bash
+        run: |
+          found=false
+          for function_name in interview-start interview-turn interview-score interview-human-confirm; do
+            if [ -d "supabase/functions/${function_name}" ]; then
+              found=true
+            fi
+          done
+          echo "has_functions=${found}" >> "$GITHUB_OUTPUT"
+          if [ "${found}" != "true" ]; then
+            echo "No deployable Supabase functions found; skipping deployment."
+          fi
+
+      - name: Setup Supabase CLI
+        if: steps.functions.outputs.has_functions == 'true'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        if: steps.functions.outputs.has_functions == 'true'
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Sync agent secrets
+        if: steps.functions.outputs.has_functions == 'true'
+        run: |
+          supabase secrets set \
+            AGENT_BASE_URL=${{ secrets.AGENT_BASE_URL }} \
+            AGENT_SHARED_SECRET=${{ secrets.AGENT_SHARED_SECRET }} \
+            AGENT_TIMEOUT_MS=${{ secrets.AGENT_TIMEOUT_MS }}
+
+      - name: Deploy functions
+        if: steps.functions.outputs.has_functions == 'true'
+        shell: bash
+        run: |
+          for function_name in interview-start interview-turn interview-score interview-human-confirm; do
+            if [ -d "supabase/functions/${function_name}" ]; then
+              supabase functions deploy "${function_name}"
+            else
+              echo "Skipping missing function: ${function_name}"
+            fi
+          done

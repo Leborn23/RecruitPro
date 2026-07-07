@@ -1,0 +1,1 @@
+import{t as e}from"./index-BvPdC3BQ.js";export{e as supabase};
